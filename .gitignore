@@ -1,0 +1,6 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Generated audio and plots can be reproduced from the configurations.
+results/

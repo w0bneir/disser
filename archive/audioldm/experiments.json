@@ -1,0 +1,23 @@
+{
+  "model_id": "cvssp/audioldm-s-full-v2",
+  "seeds": [17, 42, 2026],
+  "num_inference_steps": 30,
+  "cfg_scale": 7.5,
+  "gamma": 20.0,
+  "gradient_clip_norm": 0.1,
+  "eta": 0.0,
+  "cases": [
+    {
+      "id": "metal_impact",
+      "reference_wav": "references/metal_impact.wav",
+      "prompt": "heavy metallic anvil impact, sharp iron hit, cinematic sound effect",
+      "negative_prompt": "low quality, noise, distortion, hiss"
+    },
+    {
+      "id": "wood_creak",
+      "reference_wav": "references/wood_creak.wav",
+      "prompt": "old wooden door creak, dry wood friction, close-up foley sound effect",
+      "negative_prompt": "low quality, noise, distortion, hiss"
+    }
+  ]
+}

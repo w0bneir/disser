@@ -1,0 +1,18 @@
+{
+  "model_id": "stabilityai/stable-audio-open-1.0",
+  "duration_seconds": 3.0,
+  "num_inference_steps": 50,
+  "cfg_scale": 7.0,
+  "seeds": [17, 42, 2026],
+  "negative_prompt": "music, melody, singing, speech, low quality, distortion, hiss",
+  "cases": [
+    {
+      "id": "metal_impact",
+      "prompt": "single heavy metallic anvil strike, isolated dry cinematic foley sound effect, no ambience"
+    },
+    {
+      "id": "wood_creak",
+      "prompt": "single old wooden door creak, dry wood friction, close-up isolated foley sound effect, no ambience"
+    }
+  ]
+}

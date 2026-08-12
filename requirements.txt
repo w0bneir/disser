@@ -1,0 +1,13 @@
+--extra-index-url https://download.pytorch.org/whl/cu121
+torch==2.5.1+cu121
+torchaudio==2.5.1+cu121
+diffusers==0.39.0
+transformers>=4.44,<5
+accelerate>=0.34,<2
+librosa>=0.10,<1
+soundfile>=0.12,<1
+matplotlib>=3.8,<4
+numpy>=1.26,<3
+safetensors>=0.4,<1
+sentencepiece>=0.2,<1
+torchsde>=0.2,<1

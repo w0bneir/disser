@@ -1,0 +1,23 @@
+{
+  "model_id": "stabilityai/stable-audio-open-1.0",
+  "seeds": [17, 42, 2026],
+  "num_inference_steps": 50,
+  "cfg_scale": 7.0,
+  "gamma": 20.0,
+  "gradient_clip_norm": 0.1,
+  "guidance_start_fraction": 0.3,
+  "max_relative_step": 0.03,
+  "negative_prompt": "music, melody, singing, speech, low quality, distortion, hiss",
+  "cases": [
+    {
+      "id": "metal_impact",
+      "reference_path": "references/metal_impact.wav",
+      "prompt": "single heavy metallic anvil strike, isolated dry cinematic foley sound effect, no ambience"
+    },
+    {
+      "id": "wood_creak",
+      "reference_path": "references/wood_creak.wav",
+      "prompt": "single old wooden door creak, dry wood friction, close-up isolated foley sound effect, no ambience"
+    }
+  ]
+}
