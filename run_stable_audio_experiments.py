@@ -24,8 +24,11 @@ from stable_audio_guidance import (
 )
 from stable_audio_probe import DEFAULT_MODEL_ID, load_stable_audio
 
-MINIMUM_GUIDANCE_VRAM_GB = 12.0
-MINIMUM_GUIDANCE_FREE_VRAM_GB = 10.0
+# nvidia-smi reports MiB. A marketed 12 GB RTX 5070 exposes 12_227 MiB,
+# which is 11.94 GiB and must not be rejected against a binary 12.0 GiB limit.
+# Keep this launcher aligned with tools/preflight_gpu.ps1.
+MINIMUM_GUIDANCE_VRAM_GB = 12_000 / 1024
+MINIMUM_GUIDANCE_FREE_VRAM_GB = 10_000 / 1024
 
 
 METRIC_COLUMNS = [
@@ -88,18 +91,18 @@ def require_safe_gpu(
     free_vram_gb = free_vram_bytes / (1024**3)
     gpu_name = torch.cuda.get_device_name(0)
     print(
-        f"[+] GPU: {gpu_name}; VRAM: {total_vram_gb:.1f} ГБ всего, "
-        f"{free_vram_gb:.1f} ГБ свободно"
+        f"[+] GPU: {gpu_name}; VRAM: {total_vram_gb * 1024:.0f} MiB всего, "
+        f"{free_vram_gb * 1024:.0f} MiB свободно"
     )
     if (
         total_vram_gb < minimum_vram_gb or free_vram_gb < minimum_free_vram_gb
     ) and not allow_unsafe_vram:
         raise RuntimeError(
             "Ручной Stable Audio guidance заблокирован: "
-            f"всего {total_vram_gb:.1f} ГБ, свободно {free_vram_gb:.1f} ГБ; "
-            f"требуется не менее {minimum_vram_gb:.1f} ГБ всего и "
-            f"{minimum_free_vram_gb:.1f} ГБ свободно. "
-            "Это предотвращает зависание Windows. Используйте GPU с 12+ ГБ VRAM."
+            f"всего {total_vram_gb * 1024:.0f} MiB, свободно {free_vram_gb * 1024:.0f} MiB; "
+            f"требуется не менее {minimum_vram_gb * 1024:.0f} MiB всего и "
+            f"{minimum_free_vram_gb * 1024:.0f} MiB свободно. "
+            "Это предотвращает зависание Windows."
         )
     if total_vram_gb < minimum_vram_gb or free_vram_gb < minimum_free_vram_gb:
         print("[!] Запущен небезопасный режим по явному флагу; система может зависнуть.")
@@ -417,7 +420,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--allow-unsafe-vram",
         action="store_true",
-        help="Отключить защиту VRAM. На GPU с менее чем 12 ГБ может зависнуть Windows.",
+        help="Отключить защиту VRAM. На GPU с менее чем 12 000 MiB может зависнуть Windows.",
     )
     parser.add_argument("--preflight-only", action="store_true", help="Проверить GPU и завершиться без загрузки модели.")
     return parser.parse_args()
