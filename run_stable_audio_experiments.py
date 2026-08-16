@@ -25,6 +25,7 @@ from stable_audio_guidance import (
 from stable_audio_probe import DEFAULT_MODEL_ID, load_stable_audio
 
 MINIMUM_GUIDANCE_VRAM_GB = 12.0
+MINIMUM_GUIDANCE_FREE_VRAM_GB = 10.0
 
 
 METRIC_COLUMNS = [
@@ -73,20 +74,34 @@ def release_gpu() -> None:
         torch.cuda.empty_cache()
 
 
-def require_safe_gpu(*, minimum_vram_gb: float, allow_unsafe_vram: bool) -> None:
+def require_safe_gpu(
+    *,
+    minimum_vram_gb: float,
+    minimum_free_vram_gb: float,
+    allow_unsafe_vram: bool,
+) -> None:
     """Не допустить ручной Stable Audio guidance на заведомо недостаточной GPU."""
     if not torch.cuda.is_available():
         raise RuntimeError("Для Stable Audio guidance требуется CUDA-видеокарта")
     total_vram_gb = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+    free_vram_bytes, total_vram_bytes = torch.cuda.mem_get_info(0)
+    free_vram_gb = free_vram_bytes / (1024**3)
     gpu_name = torch.cuda.get_device_name(0)
-    print(f"[+] GPU: {gpu_name}; доступно всего VRAM: {total_vram_gb:.1f} ГБ")
-    if total_vram_gb < minimum_vram_gb and not allow_unsafe_vram:
+    print(
+        f"[+] GPU: {gpu_name}; VRAM: {total_vram_gb:.1f} ГБ всего, "
+        f"{free_vram_gb:.1f} ГБ свободно"
+    )
+    if (
+        total_vram_gb < minimum_vram_gb or free_vram_gb < minimum_free_vram_gb
+    ) and not allow_unsafe_vram:
         raise RuntimeError(
-            f"Ручной Stable Audio guidance заблокирован: обнаружено {total_vram_gb:.1f} ГБ VRAM, "
-            f"а безопасный минимум для этого прототипа — {minimum_vram_gb:.1f} ГБ. "
+            "Ручной Stable Audio guidance заблокирован: "
+            f"всего {total_vram_gb:.1f} ГБ, свободно {free_vram_gb:.1f} ГБ; "
+            f"требуется не менее {minimum_vram_gb:.1f} ГБ всего и "
+            f"{minimum_free_vram_gb:.1f} ГБ свободно. "
             "Это предотвращает зависание Windows. Используйте GPU с 12+ ГБ VRAM."
         )
-    if total_vram_gb < minimum_vram_gb:
+    if total_vram_gb < minimum_vram_gb or free_vram_gb < minimum_free_vram_gb:
         print("[!] Запущен небезопасный режим по явному флагу; система может зависнуть.")
 
 
@@ -219,12 +234,21 @@ def run(
     allow_download: bool,
     smoke_test: bool,
     minimum_vram_gb: float,
+    minimum_free_vram_gb: float,
     allow_unsafe_vram: bool,
+    preflight_only: bool,
 ) -> None:
     if max_new_pairs is not None and max_new_pairs <= 0:
         raise ValueError("max_new_pairs должен быть положительным")
     config = read_config(config_path)
-    require_safe_gpu(minimum_vram_gb=minimum_vram_gb, allow_unsafe_vram=allow_unsafe_vram)
+    require_safe_gpu(
+        minimum_vram_gb=minimum_vram_gb,
+        minimum_free_vram_gb=minimum_free_vram_gb,
+        allow_unsafe_vram=allow_unsafe_vram,
+    )
+    if preflight_only:
+        print("[+] GPU preflight завершён. Модель не загружалась.")
+        return
     cases = config["cases"][:1] if smoke_test else config["cases"]
     seeds = config["seeds"][:1] if smoke_test else config["seeds"]
     # Один шаг — крайний случай стохастического scheduler и невалидный smoke-test.
@@ -389,11 +413,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-download", action="store_true")
     parser.add_argument("--smoke-test", action="store_true")
     parser.add_argument("--minimum-vram-gb", type=float, default=MINIMUM_GUIDANCE_VRAM_GB)
+    parser.add_argument("--minimum-free-vram-gb", type=float, default=MINIMUM_GUIDANCE_FREE_VRAM_GB)
     parser.add_argument(
         "--allow-unsafe-vram",
         action="store_true",
         help="Отключить защиту VRAM. На GPU с менее чем 12 ГБ может зависнуть Windows.",
     )
+    parser.add_argument("--preflight-only", action="store_true", help="Проверить GPU и завершиться без загрузки модели.")
     return parser.parse_args()
 
 
@@ -408,5 +434,7 @@ if __name__ == "__main__":
         allow_download=arguments.allow_download,
         smoke_test=arguments.smoke_test,
         minimum_vram_gb=arguments.minimum_vram_gb,
+        minimum_free_vram_gb=arguments.minimum_free_vram_gb,
         allow_unsafe_vram=arguments.allow_unsafe_vram,
+        preflight_only=arguments.preflight_only,
     )

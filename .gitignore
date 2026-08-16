@@ -4,3 +4,7 @@ __pycache__/
 
 # Generated audio and plots can be reproduced from the configurations.
 results/
+
+# Local/remote AI caches and manually transferred experiment archives.
+artifacts/
+hf-cache/
