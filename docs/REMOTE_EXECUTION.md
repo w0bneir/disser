@@ -3,7 +3,7 @@
 ## Роли компьютеров
 
 - `D:\Projects\disser` на основном ПК — единственное место редактирования кода.
-- `C:\Users\sfxrunner\Projects\disser` на RTX 5070 — чистая исполнительная
+- `C:\Users\godmi\Projects\disser` на RTX 5070 (`pspc`) — чистая исполнительная
   копия: только `git pull --ff-only`, тесты и запуски.
 - `D:\YandexDisk\SFX_artifacts` — архив завершённых результатов. Рабочая папка,
   Conda-среда и Hugging Face cache не должны находиться в Yandex Disk.
@@ -30,8 +30,8 @@ code D:\Projects\disser
 Эти действия выполняются один раз. На обоих ПК установите Tailscale, войдите в один
 и тот же tailnet и убедитесь, что RTX 5070 имеет MagicDNS-имя (или Tailscale IP).
 
-На RTX 5070 создайте обычного, не административного пользователя `sfxrunner`.
-Устанавливать OpenSSH Server нужно из PowerShell **от имени администратора**:
+На RTX 5070 используется существующий пользователь `godmi`. Устанавливать OpenSSH
+Server нужно из PowerShell **от имени администратора**:
 
 ```powershell
 Get-WindowsCapability -Online | Where-Object Name -like 'OpenSSH*'
@@ -50,8 +50,8 @@ Get-Content "$env:USERPROFILE\.ssh\id_ed25519_disser_5070.pub"
 ```
 
 Скопируйте одну выведенную публичную строку в
-`C:\Users\sfxrunner\.ssh\authorized_keys` на RTX 5070. На RTX 5070, войдя под
-`sfxrunner`, выполните:
+`C:\Users\godmi\.ssh\authorized_keys` на RTX 5070. На RTX 5070, войдя под
+`godmi`, выполните:
 
 ```powershell
 New-Item -ItemType Directory -Force "$env:USERPROFILE\.ssh"
@@ -64,8 +64,8 @@ icacls "$env:USERPROFILE\.ssh\authorized_keys" /inheritance:r /grant:r "${env:US
 
 ```text
 Host disser-5070
-    HostName <MagicDNS-имя-RTX5070>
-    User sfxrunner
+    HostName pspc
+    User godmi
     IdentityFile C:\Users\godmi\.ssh\id_ed25519_disser_5070
     IdentitiesOnly yes
     ServerAliveInterval 30
@@ -81,16 +81,16 @@ Set-NetFirewallRule -Name OpenSSH-Server-In-TCP -RemoteAddress 100.64.0.0/10
 
 В VS Code на основном ПК установите расширение **Remote - SSH**, выберите
 `Remote-SSH: Connect to Host...` → `disser-5070` и откройте
-`C:\Users\sfxrunner\Projects\disser`. В открытом удалённом окне не редактируйте
+`C:\Users\godmi\Projects\disser`. В открытом удалённом окне не редактируйте
 код: используйте его только для терминалов, диагностики и запуска.
 
 ## Создание среды на RTX 5070
 
-В Miniconda Prompt под пользователем `sfxrunner`:
+В Miniconda Prompt под пользователем `godmi`:
 
 ```bat
-mkdir C:\Users\sfxrunner\Projects
-cd /d C:\Users\sfxrunner\Projects
+mkdir C:\Users\godmi\Projects
+cd /d C:\Users\godmi\Projects
 git clone https://github.com/w0bneir/disser.git
 cd disser
 conda create -n sfx_gen_5070 python=3.11 -y
@@ -117,7 +117,7 @@ setx HF_HOME D:\AI\hf-cache
 
 ```bat
 conda activate sfx_gen_5070
-cd /d C:\Users\sfxrunner\Projects\disser
+cd /d C:\Users\godmi\Projects\disser
 git pull --ff-only
 powershell -ExecutionPolicy Bypass -File tools\preflight_gpu.ps1
 python run_stable_audio_experiments.py --preflight-only
@@ -155,7 +155,7 @@ powershell -ExecutionPolicy Bypass -File tools\capture_run_context.ps1 -ResultsD
 С основного ПК заберите готовую папку:
 
 ```powershell
-scp -r disser-5070:"C:/Users/sfxrunner/Projects/disser/results/<RUN_ID>" "D:\YandexDisk\SFX_artifacts\"
+scp -r disser-5070:"C:/Users/godmi/Projects/disser/results/<RUN_ID>" "D:\YandexDisk\SFX_artifacts\"
 ```
 
 Не копируйте в Git файлы из `results/`.
