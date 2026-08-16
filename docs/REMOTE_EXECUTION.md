@@ -25,13 +25,16 @@ code D:\Projects\disser
 изменения кода не вносятся — перед запуском там разрешён только
 `git pull --ff-only`.
 
-## Канал удалённой работы: Tailscale + SSH
+## Канал удалённой работы: локальная сеть + SSH
 
-Эти действия выполняются один раз. На обоих ПК установите Tailscale, войдите в один
-и тот же tailnet и убедитесь, что RTX 5070 имеет MagicDNS-имя (или Tailscale IP).
+Удалённый исполнитель: `PSPC` / `192.168.0.14`, пользователь Windows: `godmi`.
+Оба ПК находятся в одной локальной сети; Tailscale для этой схемы не используется.
+Адрес получен по DHCP, поэтому после первой успешной связи желательно закрепить
+`192.168.0.14` за PSPC в настройках роутера.
 
-На RTX 5070 используется существующий пользователь `godmi`. Устанавливать OpenSSH
-Server нужно из PowerShell **от имени администратора**:
+OpenSSH Server на PSPC уже установлен, сервис `sshd` запущен автоматически. Для
+повторной установки ничего выполнять не нужно. Диагностические команды на случай
+сбоя выполняются из PowerShell **от имени администратора**:
 
 ```powershell
 Get-WindowsCapability -Online | Where-Object Name -like 'OpenSSH*'
@@ -64,7 +67,7 @@ icacls "$env:USERPROFILE\.ssh\authorized_keys" /inheritance:r /grant:r "${env:US
 
 ```text
 Host disser-5070
-    HostName pspc
+    HostName 192.168.0.14
     User godmi
     IdentityFile C:\Users\godmi\.ssh\id_ed25519_disser_5070
     IdentitiesOnly yes
@@ -73,10 +76,10 @@ Host disser-5070
 ```
 
 Проверьте `ssh disser-5070`. Только после успешного входа ключом ограничьте
-стандартное правило SSH Tailscale-сетью на RTX 5070:
+стандартное правило SSH локальной подсетью на PSPC (PowerShell от администратора):
 
 ```powershell
-Set-NetFirewallRule -Name OpenSSH-Server-In-TCP -RemoteAddress 100.64.0.0/10
+Set-NetFirewallRule -Name OpenSSH-Server-In-TCP -RemoteAddress 192.168.0.0/24
 ```
 
 В VS Code на основном ПК установите расширение **Remote - SSH**, выберите
