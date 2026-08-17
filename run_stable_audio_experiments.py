@@ -70,6 +70,34 @@ def read_config(path: Path) -> dict[str, Any]:
     return config
 
 
+def resolve_inference_steps(
+    *,
+    configured_steps: int,
+    smoke_test: bool,
+    requested_steps: int | None,
+    max_new_pairs: int | None,
+) -> int:
+    """Выбрать безопасное число шагов denoising для одного запуска."""
+    if smoke_test:
+        if requested_steps is not None:
+            raise ValueError("--num-inference-steps нельзя совмещать с --smoke-test")
+        # Один шаг — крайний случай стохастического scheduler и невалидный smoke-test.
+        # Четыре шага по-прежнему лёгкие, но проходят нормальный denoising-маршрут.
+        return 4
+    if requested_steps is None:
+        return configured_steps
+    if not 2 <= requested_steps <= configured_steps:
+        raise ValueError(
+            f"--num-inference-steps должен быть в диапазоне [2, {configured_steps}]"
+        )
+    if max_new_pairs != 1:
+        raise ValueError(
+            "Промежуточный запуск требует --max-new-pairs 1, "
+            "чтобы не запускать несколько GPU-пар подряд"
+        )
+    return requested_steps
+
+
 def release_gpu() -> None:
     gc.collect()
     if torch.cuda.is_available():
@@ -236,6 +264,7 @@ def run(
     max_new_pairs: int | None,
     allow_download: bool,
     smoke_test: bool,
+    requested_num_inference_steps: int | None,
     minimum_vram_gb: float,
     minimum_free_vram_gb: float,
     allow_unsafe_vram: bool,
@@ -254,9 +283,12 @@ def run(
         return
     cases = config["cases"][:1] if smoke_test else config["cases"]
     seeds = config["seeds"][:1] if smoke_test else config["seeds"]
-    # Один шаг — крайний случай стохастического scheduler и невалидный smoke-test.
-    # Четыре шага по-прежнему лёгкие, но проходят нормальный denoising-маршрут.
-    steps = 4 if smoke_test else int(config["num_inference_steps"])
+    steps = resolve_inference_steps(
+        configured_steps=int(config["num_inference_steps"]),
+        smoke_test=smoke_test,
+        requested_steps=requested_num_inference_steps,
+        max_new_pairs=max_new_pairs,
+    )
     results_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = results_dir / "metrics.csv"
     rows: list[dict[str, float | int | str]] = []
@@ -415,6 +447,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-new-pairs", type=int, default=None)
     parser.add_argument("--allow-download", action="store_true")
     parser.add_argument("--smoke-test", action="store_true")
+    parser.add_argument(
+        "--num-inference-steps",
+        type=int,
+        default=None,
+        help=(
+            "Промежуточный режим на 2–50 шагов; требует --max-new-pairs 1. "
+            "Не совмещается с --smoke-test."
+        ),
+    )
     parser.add_argument("--minimum-vram-gb", type=float, default=MINIMUM_GUIDANCE_VRAM_GB)
     parser.add_argument("--minimum-free-vram-gb", type=float, default=MINIMUM_GUIDANCE_FREE_VRAM_GB)
     parser.add_argument(
@@ -436,6 +477,7 @@ if __name__ == "__main__":
         max_new_pairs=arguments.max_new_pairs,
         allow_download=arguments.allow_download,
         smoke_test=arguments.smoke_test,
+        requested_num_inference_steps=arguments.num_inference_steps,
         minimum_vram_gb=arguments.minimum_vram_gb,
         minimum_free_vram_gb=arguments.minimum_free_vram_gb,
         allow_unsafe_vram=arguments.allow_unsafe_vram,

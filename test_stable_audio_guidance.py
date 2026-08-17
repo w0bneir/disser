@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import torch
 
+from run_stable_audio_experiments import resolve_inference_steps
 from stable_audio_guidance import (
     _x0_from_v_prediction,
     active_latent_length,
@@ -44,6 +45,42 @@ class _CfgPipe:
 
 
 class StableAudioGuidanceTests(unittest.TestCase):
+    def test_smoke_test_always_uses_four_steps(self) -> None:
+        self.assertEqual(
+            resolve_inference_steps(
+                configured_steps=50,
+                smoke_test=True,
+                requested_steps=None,
+                max_new_pairs=1,
+            ),
+            4,
+        )
+
+    def test_intermediate_steps_require_one_pair(self) -> None:
+        with self.assertRaisesRegex(ValueError, "--max-new-pairs 1"):
+            resolve_inference_steps(
+                configured_steps=50,
+                smoke_test=False,
+                requested_steps=10,
+                max_new_pairs=None,
+            )
+
+    def test_intermediate_steps_validate_range_and_smoke_conflict(self) -> None:
+        with self.assertRaisesRegex(ValueError, "диапазоне"):
+            resolve_inference_steps(
+                configured_steps=50,
+                smoke_test=False,
+                requested_steps=51,
+                max_new_pairs=1,
+            )
+        with self.assertRaisesRegex(ValueError, "нельзя совмещать"):
+            resolve_inference_steps(
+                configured_steps=50,
+                smoke_test=True,
+                requested_steps=10,
+                max_new_pairs=1,
+            )
+
     def test_latent_envelope_shape_and_normalization(self) -> None:
         latents = torch.arange(2 * 4 * 8, dtype=torch.float32).reshape(2, 4, 8)
         envelope = latent_rms_envelope(latents, active_length=5)

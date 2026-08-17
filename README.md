@@ -86,6 +86,18 @@ python run_stable_audio_experiments.py --smoke-test --max-new-pairs 1 --cooldown
 Если система остаётся отзывчивой и в `results\stable_audio_guidance\` созданы
 два WAV, следующий шаг — один полный 50-шаговый pair:
 
+Перед ним выполните промежуточные одиночные прогоны на 10 и 20 шагах. Они
+требуют явного `--max-new-pairs 1`, поэтому не смогут случайно запустить серию
+GPU-пар:
+
+```bat
+python run_stable_audio_experiments.py --num-inference-steps 10 --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\stable_audio_10step
+python run_stable_audio_experiments.py --num-inference-steps 20 --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\stable_audio_20step
+```
+
+Только после проверки этих двух результатов можно запускать один полный
+50-шаговый pair:
+
 ```bat
 python run_stable_audio_experiments.py --results-dir results\stable_audio_trial_gamma20 --max-new-pairs 1 --cooldown-seconds 20
 ```

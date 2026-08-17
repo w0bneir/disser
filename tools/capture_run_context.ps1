@@ -17,7 +17,7 @@ $pipCheck = & $python.Source -m pip check 2>&1
 $torchProbe = & $python.Source -c 'import torch; print(torch.__version__); print(torch.version.cuda); print(torch.cuda.get_device_name(0)); print(torch.cuda.get_device_properties(0).total_memory)' 2>&1
 
 @(
-    "captured_at_utc=$(Get-Date -AsUTC -Format o)"
+    "captured_at_utc=$([DateTime]::UtcNow.ToString('o'))"
     "git_commit=$(git rev-parse HEAD)"
     "git_branch=$(git branch --show-current)"
     "python=$pythonVersion"
