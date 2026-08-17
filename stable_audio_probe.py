@@ -51,8 +51,10 @@ def load_stable_audio(model_id: str, *, local_files_only: bool) -> Any:
         torch_dtype=torch.float16,
         local_files_only=local_files_only,
     )
+    print("[+] Веса модели загружены; включается model CPU offload...")
     pipe.enable_model_cpu_offload(gpu_id=0)
     pipe.set_progress_bar_config(disable=True)
+    print("[+] Model CPU offload готов.")
     return pipe
 
 
@@ -182,11 +184,14 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = parse_args()
-    run(
-        args.config,
-        args.output_dir,
-        resume=args.resume,
-        cooldown_seconds=args.cooldown_seconds,
-        max_new_runs=args.max_new_runs,
-        allow_download=args.allow_download,
-    )
+    try:
+        run(
+            args.config,
+            args.output_dir,
+            resume=args.resume,
+            cooldown_seconds=args.cooldown_seconds,
+            max_new_runs=args.max_new_runs,
+            allow_download=args.allow_download,
+        )
+    finally:
+        release_gpu()

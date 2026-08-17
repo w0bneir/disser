@@ -298,6 +298,7 @@ def run(
 
     print("[+] Загрузка Stable Audio Open с CPU offload...")
     pipe = load_stable_audio(config.get("model_id", DEFAULT_MODEL_ID), local_files_only=not allow_download)
+    print("[+] Pipeline готов; подготавливаются референс и начальный latent.")
     device = torch.device("cuda")
     completed_pairs = 0
 
@@ -469,17 +470,20 @@ def parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     arguments = parse_args()
-    run(
-        arguments.config,
-        arguments.results_dir,
-        resume=arguments.resume,
-        cooldown_seconds=arguments.cooldown_seconds,
-        max_new_pairs=arguments.max_new_pairs,
-        allow_download=arguments.allow_download,
-        smoke_test=arguments.smoke_test,
-        requested_num_inference_steps=arguments.num_inference_steps,
-        minimum_vram_gb=arguments.minimum_vram_gb,
-        minimum_free_vram_gb=arguments.minimum_free_vram_gb,
-        allow_unsafe_vram=arguments.allow_unsafe_vram,
-        preflight_only=arguments.preflight_only,
-    )
+    try:
+        run(
+            arguments.config,
+            arguments.results_dir,
+            resume=arguments.resume,
+            cooldown_seconds=arguments.cooldown_seconds,
+            max_new_pairs=arguments.max_new_pairs,
+            allow_download=arguments.allow_download,
+            smoke_test=arguments.smoke_test,
+            requested_num_inference_steps=arguments.num_inference_steps,
+            minimum_vram_gb=arguments.minimum_vram_gb,
+            minimum_free_vram_gb=arguments.minimum_free_vram_gb,
+            allow_unsafe_vram=arguments.allow_unsafe_vram,
+            preflight_only=arguments.preflight_only,
+        )
+    finally:
+        release_gpu()
