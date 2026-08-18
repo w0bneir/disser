@@ -184,12 +184,13 @@ python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 
 позиция всё время остаётся внутри 3% от исходного anchor, поэтому локальные
 шаги не могут накопиться в неограниченный drift.
 
-Экспериментальный режим `decoder` предназначен для проверки точного градиента
-реальной waveform-огибающей. Он выполняет только один VAE backward после
-завершения denoising, декодирует `active latent + 64` контекстных позиции и
-сохраняет тот же суммарный 3%-trust region. До отдельного GPU smoke-test режим
-жёстко ограничен одной парой и `--final-guidance-steps 1`.
+Экспериментальный режим `decoder` использует точный градиент реальной
+waveform-огибающей после завершения denoising. Он декодирует
+`active latent + 64` контекстных позиции и допускает от одного до трёх VAE
+backward-итераций. Все итерации проецируются относительно одного исходного
+anchor, поэтому суммарное изменение каждой временной позиции остаётся внутри
+3%-trust region. Режим по-прежнему жёстко ограничен одной парой.
 
 ```bat
-python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --envelope-probe models\envelope_probe.safetensors --probe-guidance-mode decoder --final-guidance-steps 1 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_decoder_guidance_smoke
+python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --envelope-probe models\envelope_probe.safetensors --probe-guidance-mode decoder --final-guidance-steps 3 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_decoder_guidance_3step_smoke
 ```

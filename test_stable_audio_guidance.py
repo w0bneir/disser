@@ -84,10 +84,15 @@ class StableAudioGuidanceTests(unittest.TestCase):
                 final_guidance_steps=0,
                 envelope_probe_path=None,
             )
-        with self.assertRaisesRegex(ValueError, "требует --final-guidance-steps 1"):
+        validate_probe_guidance_mode(
+            probe_guidance_mode="decoder",
+            final_guidance_steps=3,
+            envelope_probe_path=Path("probe.safetensors"),
+        )
+        with self.assertRaisesRegex(ValueError, "диапазоне"):
             validate_probe_guidance_mode(
                 probe_guidance_mode="decoder",
-                final_guidance_steps=2,
+                final_guidance_steps=4,
                 envelope_probe_path=Path("probe.safetensors"),
             )
 
@@ -430,10 +435,10 @@ class StableAudioGuidanceTests(unittest.TestCase):
             target_envelope=target,
             active_length=3,
             waveform_length=3072,
-            gamma=1000.0,
+            gamma=50.0,
             gradient_clip_norm=1000.0,
             max_relative_step=0.03,
-            steps=1,
+            steps=3,
             decoder_context_frames=0,
             reference_active_length=3,
         )
@@ -443,11 +448,21 @@ class StableAudioGuidanceTests(unittest.TestCase):
             envelope_metrics(target_resampled, before)["mse"],
         )
         self.assertAlmostEqual(final_loss, trace[-1]["loss_after"])
+        self.assertEqual(len(trace), 3)
+        self.assertTrue(
+            all(
+                float(current["loss_after"]) <= float(current["loss_before"])
+                for current in trace
+            )
+        )
         delta = corrected[:, :, :3] - latents[:, :, :3]
         frame_relative = torch.linalg.vector_norm(delta, dim=1) / torch.linalg.vector_norm(
             latents[:, :, :3], dim=1
         )
         self.assertLessEqual(float(frame_relative.max()), 0.030001)
+        self.assertTrue(
+            all(float(row["max_frame_relative_correction"]) <= 0.030001 for row in trace)
+        )
         self.assertTrue(torch.equal(corrected[:, :, 3:], latents[:, :, 3:]))
 
     def test_fp16_early_sigma_stays_finite(self) -> None:

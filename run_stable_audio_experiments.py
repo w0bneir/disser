@@ -219,8 +219,11 @@ def validate_probe_guidance_mode(
         raise ValueError(
             f"--probe-guidance-mode {probe_guidance_mode} требует --envelope-probe"
         )
-    if probe_guidance_mode == "decoder" and final_guidance_steps != 1:
-        raise ValueError("Экспериментальный decoder mode требует --final-guidance-steps 1")
+    if probe_guidance_mode == "decoder" and final_guidance_steps > 3:
+        raise ValueError(
+            "Экспериментальный decoder mode допускает --final-guidance-steps "
+            "в диапазоне [1, 3]"
+        )
 
 
 def load_reference_for_analysis(
