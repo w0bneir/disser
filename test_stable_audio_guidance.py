@@ -7,16 +7,20 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
+import numpy as np
 import torch
 
 from analyzer import load_audio
 from run_stable_audio_experiments import (
     PAIR_OUTPUT_FILES,
+    LATENT_DIAGNOSTICS_FILE,
     load_reference_for_analysis,
     pair_is_complete,
     resolve_experiment_selection,
     resolve_guidance_gamma,
     resolve_inference_steps,
+    save_latent_diagnostics,
+    validate_latent_diagnostics_request,
 )
 from stable_audio_guidance import (
     _x0_from_v_prediction,
@@ -64,6 +68,58 @@ class StableAudioGuidanceTests(unittest.TestCase):
             for name in PAIR_OUTPUT_FILES:
                 (run_dir / name).touch()
             self.assertTrue(pair_is_complete(run_dir))
+            self.assertFalse(pair_is_complete(run_dir, require_latent_diagnostics=True))
+            (run_dir / LATENT_DIAGNOSTICS_FILE).touch()
+            self.assertTrue(pair_is_complete(run_dir, require_latent_diagnostics=True))
+
+    def test_latent_diagnostics_request_requires_one_pair(self) -> None:
+        validate_latent_diagnostics_request(
+            export_latent_diagnostics=False,
+            max_new_pairs=None,
+        )
+        validate_latent_diagnostics_request(
+            export_latent_diagnostics=True,
+            max_new_pairs=1,
+        )
+        with self.assertRaisesRegex(ValueError, "--max-new-pairs 1"):
+            validate_latent_diagnostics_request(
+                export_latent_diagnostics=True,
+                max_new_pairs=None,
+            )
+
+    def test_latent_diagnostics_npz_is_numeric_and_aligned(self) -> None:
+        with TemporaryDirectory() as directory:
+            output = Path(directory) / LATENT_DIAGNOSTICS_FILE
+            target = torch.tensor([0.0, 0.5, 1.0, 0.0])
+            baseline_latent = torch.tensor([0.0, 0.3, 1.0])
+            guided_latent = torch.tensor([0.0, 0.6, 1.0])
+            baseline_waveform = torch.tensor([0.0, 0.2, 0.7, 1.0, 0.2])
+            guided_waveform = torch.tensor([0.0, 0.4, 0.9, 1.0, 0.1])
+            baseline_active = torch.arange(12, dtype=torch.float16).reshape(4, 3)
+            guided_active = baseline_active + 0.25
+
+            metadata = save_latent_diagnostics(
+                output,
+                target_envelope=target,
+                baseline_latent_envelope=baseline_latent,
+                guided_latent_envelope=guided_latent,
+                baseline_waveform_envelope=baseline_waveform,
+                guided_waveform_envelope=guided_waveform,
+                baseline_active_latents=baseline_active,
+                guided_active_latents=guided_active,
+                sample_rate=44_100,
+                duration_seconds=0.5,
+                latent_hop_length=2_048,
+            )
+
+            self.assertTrue(output.is_file())
+            self.assertEqual(metadata["active_latent_shape"], [4, 3])
+            with np.load(output, allow_pickle=False) as archive:
+                self.assertEqual(archive["baseline_active_latents"].shape, (4, 3))
+                self.assertEqual(archive["target_envelope_latent"].shape, (3,))
+                self.assertEqual(archive["target_envelope_waveform"].shape, (5,))
+                self.assertEqual(archive["format_version"].item(), 1)
+                self.assertEqual(archive["latent_hop_length"].item(), 2_048)
 
     def test_reference_wav_loads_as_16khz_mono_without_librosa(self) -> None:
         reference = Path(__file__).parent / "references" / "metal_impact.wav"

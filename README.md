@@ -131,3 +131,12 @@ python run_stable_audio_experiments.py --num-inference-steps 20 --gamma 50 --max
 ```bat
 python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_duration_scaled_smoke
 ```
+
+Для построения waveform-aware envelope probe предусмотрен диагностический
+экспорт. Флаг сохраняет `latent_diagnostics.npz` с active latents и выровненными
+target/latent/waveform-огибающими. NPZ содержит только числовые массивы и
+открывается с `allow_pickle=False`; экспорт всегда ограничен одной GPU-парой:
+
+```bat
+python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_latent_diagnostics_smoke
+```

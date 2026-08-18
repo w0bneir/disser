@@ -19,6 +19,7 @@ class StableAudioGenerationResult:
     audio: np.ndarray
     sample_rate: int
     latent_envelope: torch.Tensor
+    active_latents: torch.Tensor | None
     guidance_loss: float | None
     guidance_trace: list[dict[str, float | int]]
     elapsed_seconds: float
@@ -323,6 +324,7 @@ def generate_sfx(
     guidance_start_fraction: float = 0.5,
     max_relative_step: float = 0.03,
     guidance_reference_duration_seconds: float = 0.5,
+    return_active_latents: bool = False,
 ) -> StableAudioGenerationResult:
     """Выполнить baseline (gamma=0) или Direct Latent Guidance.
 
@@ -423,6 +425,9 @@ def generate_sfx(
     waveform_length = int(duration_seconds * int(pipe.vae.config.sampling_rate))
     waveform = waveform[:, :, :waveform_length]
     final_envelope = latent_rms_envelope(latents, active_length=active_length)[0].detach().cpu()
+    active_latents_cpu = None
+    if return_active_latents:
+        active_latents_cpu = latents[0, :, :active_length].detach().to(device="cpu", dtype=torch.float16)
     audio = waveform[0].detach().float().cpu().numpy().T
     elapsed_seconds = perf_counter() - started_at
     peak_vram_mb = float(torch.cuda.max_memory_allocated(device) / (1024**2))
@@ -431,6 +436,7 @@ def generate_sfx(
         audio=audio,
         sample_rate=int(pipe.vae.config.sampling_rate),
         latent_envelope=final_envelope,
+        active_latents=active_latents_cpu,
         guidance_loss=last_loss,
         guidance_trace=guidance_trace,
         elapsed_seconds=elapsed_seconds,

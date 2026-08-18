@@ -54,6 +54,7 @@ PAIR_OUTPUT_FILES = (
     "guidance_trace.csv",
     "guidance_diagnostics.png",
 )
+LATENT_DIAGNOSTICS_FILE = "latent_diagnostics.npz"
 
 
 def read_config(path: Path) -> dict[str, Any]:
@@ -165,9 +166,24 @@ def resolve_experiment_selection(
     return cases, seeds
 
 
-def pair_is_complete(run_dir: Path) -> bool:
+def pair_is_complete(run_dir: Path, *, require_latent_diagnostics: bool = False) -> bool:
     """Считать пару готовой только при наличии всех обязательных артефактов."""
-    return all((run_dir / name).is_file() for name in PAIR_OUTPUT_FILES)
+    required = PAIR_OUTPUT_FILES
+    if require_latent_diagnostics:
+        required = (*required, LATENT_DIAGNOSTICS_FILE)
+    return all((run_dir / name).is_file() for name in required)
+
+
+def validate_latent_diagnostics_request(
+    *,
+    export_latent_diagnostics: bool,
+    max_new_pairs: int | None,
+) -> None:
+    if export_latent_diagnostics and max_new_pairs != 1:
+        raise ValueError(
+            "--export-latent-diagnostics требует --max-new-pairs 1, "
+            "чтобы raw latent экспортировался только для одной GPU-пары"
+        )
 
 
 def load_reference_for_analysis(
@@ -188,6 +204,102 @@ def load_reference_for_analysis(
             f"{sample_rate} != {analysis_sample_rate}"
         )
     return waveform, sample_rate, extract_rms_envelope(waveform).cpu()
+
+
+def save_latent_diagnostics(
+    path: Path,
+    *,
+    target_envelope: torch.Tensor,
+    baseline_latent_envelope: torch.Tensor,
+    guided_latent_envelope: torch.Tensor,
+    baseline_waveform_envelope: torch.Tensor,
+    guided_waveform_envelope: torch.Tensor,
+    baseline_active_latents: torch.Tensor | None,
+    guided_active_latents: torch.Tensor | None,
+    sample_rate: int,
+    duration_seconds: float,
+    latent_hop_length: int,
+    activity_threshold: float = 0.1,
+) -> dict[str, Any]:
+    """Сохранить компактную пару latent/waveform для обучения envelope-probe."""
+    if baseline_active_latents is None or guided_active_latents is None:
+        raise ValueError("Для диагностического экспорта нужны active latents обоих режимов")
+    if baseline_active_latents.ndim != 2 or guided_active_latents.ndim != 2:
+        raise ValueError("Active latents должны иметь форму [channels, time]")
+    if baseline_active_latents.shape != guided_active_latents.shape:
+        raise ValueError("Baseline и guided active latents должны иметь одинаковую форму")
+    if latent_hop_length <= 0:
+        raise ValueError("latent_hop_length должен быть положительным")
+    if not 0 < activity_threshold < 1:
+        raise ValueError("activity_threshold должен быть в диапазоне (0, 1)")
+
+    latent_length = baseline_active_latents.shape[-1]
+    if baseline_latent_envelope.numel() != latent_length:
+        raise ValueError("Baseline latent-огибающая не совпадает с active latent length")
+    if guided_latent_envelope.numel() != latent_length:
+        raise ValueError("Guided latent-огибающая не совпадает с active latent length")
+    waveform_length = baseline_waveform_envelope.numel()
+    if guided_waveform_envelope.numel() != waveform_length:
+        raise ValueError("Waveform-огибающие должны иметь одинаковую длину")
+    target_for_latent = resample_target_envelope(target_envelope, latent_length).cpu()
+    target_for_waveform = resample_target_envelope(target_envelope, waveform_length).cpu()
+    baseline_latent_for_waveform = resample_target_envelope(
+        baseline_latent_envelope.cpu(), waveform_length
+    )
+    guided_latent_for_waveform = resample_target_envelope(
+        guided_latent_envelope.cpu(), waveform_length
+    )
+
+    arrays = {
+        "baseline_active_latents": baseline_active_latents.cpu().numpy().astype(np.float16),
+        "guided_active_latents": guided_active_latents.cpu().numpy().astype(np.float16),
+        "target_envelope_latent": target_for_latent.numpy().astype(np.float32),
+        "baseline_latent_envelope": baseline_latent_envelope.cpu().numpy().astype(np.float32),
+        "guided_latent_envelope": guided_latent_envelope.cpu().numpy().astype(np.float32),
+        "target_envelope_waveform": target_for_waveform.numpy().astype(np.float32),
+        "baseline_waveform_envelope": baseline_waveform_envelope.cpu().numpy().astype(np.float32),
+        "guided_waveform_envelope": guided_waveform_envelope.cpu().numpy().astype(np.float32),
+    }
+    if not all(np.isfinite(values).all() for values in arrays.values()):
+        raise FloatingPointError("NaN/Inf в latent diagnostics; NPZ не сохранён")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        path,
+        format_version=np.asarray(1, dtype=np.int32),
+        sample_rate=np.asarray(sample_rate, dtype=np.int32),
+        duration_seconds=np.asarray(duration_seconds, dtype=np.float64),
+        latent_hop_length=np.asarray(latent_hop_length, dtype=np.int32),
+        activity_threshold=np.asarray(activity_threshold, dtype=np.float32),
+        **arrays,
+    )
+
+    def activity_fraction(values: torch.Tensor) -> float:
+        return float((values > activity_threshold).float().mean().item())
+
+    return {
+        "file": path.name,
+        "format_version": 1,
+        "active_latent_shape": list(baseline_active_latents.shape),
+        "latent_hop_length": latent_hop_length,
+        "target_vs_baseline_latent": envelope_metrics(
+            target_for_latent, baseline_latent_envelope.float().cpu()
+        ),
+        "target_vs_guided_latent": envelope_metrics(
+            target_for_latent, guided_latent_envelope.float().cpu()
+        ),
+        "baseline_latent_vs_waveform": envelope_metrics(
+            baseline_latent_for_waveform, baseline_waveform_envelope.float().cpu()
+        ),
+        "guided_latent_vs_waveform": envelope_metrics(
+            guided_latent_for_waveform, guided_waveform_envelope.float().cpu()
+        ),
+        "activity_fraction": {
+            "target": activity_fraction(target_for_waveform),
+            "baseline_waveform": activity_fraction(baseline_waveform_envelope),
+            "guided_waveform": activity_fraction(guided_waveform_envelope),
+        },
+    }
 
 
 def release_gpu() -> None:
@@ -360,6 +472,7 @@ def run(
     requested_gamma: float | None,
     requested_case_id: str | None,
     requested_seed: int | None,
+    export_latent_diagnostics: bool,
     minimum_vram_gb: float,
     minimum_free_vram_gb: float,
     allow_unsafe_vram: bool,
@@ -367,6 +480,10 @@ def run(
 ) -> None:
     if max_new_pairs is not None and max_new_pairs <= 0:
         raise ValueError("max_new_pairs должен быть положительным")
+    validate_latent_diagnostics_request(
+        export_latent_diagnostics=export_latent_diagnostics,
+        max_new_pairs=max_new_pairs,
+    )
     config = read_config(config_path)
     require_safe_gpu(
         minimum_vram_gb=minimum_vram_gb,
@@ -425,7 +542,10 @@ def run(
             run_dir = results_dir / case["id"] / f"seed_{seed}"
             baseline_path = run_dir / "baseline.wav"
             guided_path = run_dir / "guided.wav"
-            if resume and pair_is_complete(run_dir):
+            if resume and pair_is_complete(
+                run_dir,
+                require_latent_diagnostics=export_latent_diagnostics,
+            ):
                 print(f"    seed={seed}: уже готово (--resume).")
                 continue
             if resume and run_dir.exists():
@@ -443,6 +563,7 @@ def run(
                 seed=int(seed),
                 initial_latents=initial_latents,
                 gamma=0.0,
+                return_active_latents=export_latent_diagnostics,
             )
             run_dir.mkdir(parents=True, exist_ok=True)
             save_wav(baseline_path, baseline.audio, baseline.sample_rate)
@@ -464,6 +585,7 @@ def run(
                 guidance_reference_duration_seconds=float(
                     config["guidance_reference_duration_seconds"]
                 ),
+                return_active_latents=export_latent_diagnostics,
             )
             save_wav(guided_path, guided.audio, guided.sample_rate)
             save_guidance_trace(
@@ -478,6 +600,21 @@ def run(
             target_for_guided = resample_target_envelope(target, guided_envelope.numel())
             baseline_metrics = envelope_metrics(target_for_baseline, baseline_envelope)
             guided_metrics = envelope_metrics(target_for_guided, guided_envelope)
+            latent_diagnostics_metadata = None
+            if export_latent_diagnostics:
+                latent_diagnostics_metadata = save_latent_diagnostics(
+                    run_dir / LATENT_DIAGNOSTICS_FILE,
+                    target_envelope=target,
+                    baseline_latent_envelope=baseline.latent_envelope,
+                    guided_latent_envelope=guided.latent_envelope,
+                    baseline_waveform_envelope=baseline_envelope,
+                    guided_waveform_envelope=guided_envelope,
+                    baseline_active_latents=baseline.active_latents,
+                    guided_active_latents=guided.active_latents,
+                    sample_rate=guided.sample_rate,
+                    duration_seconds=duration_seconds,
+                    latent_hop_length=int(pipe.vae.hop_length),
+                )
             plot_envelopes(
                 run_dir / "envelope_comparison.png",
                 target=target,
@@ -510,6 +647,8 @@ def run(
                 "guided_final_latent_loss": guided.guidance_loss,
                 "guidance_trace": guided.guidance_trace,
             }
+            if latent_diagnostics_metadata is not None:
+                metadata["latent_diagnostics"] = latent_diagnostics_metadata
             (run_dir / "metadata.json").write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
             rows = [
                 row
@@ -601,6 +740,14 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help="Запустить только указанный seed; требует --max-new-pairs 1.",
     )
+    parser.add_argument(
+        "--export-latent-diagnostics",
+        action="store_true",
+        help=(
+            "Сохранить active latents и aligned envelopes в NPZ; "
+            "требует --max-new-pairs 1."
+        ),
+    )
     parser.add_argument("--minimum-vram-gb", type=float, default=MINIMUM_GUIDANCE_VRAM_GB)
     parser.add_argument("--minimum-free-vram-gb", type=float, default=MINIMUM_GUIDANCE_FREE_VRAM_GB)
     parser.add_argument(
@@ -627,6 +774,7 @@ if __name__ == "__main__":
             requested_gamma=arguments.gamma,
             requested_case_id=arguments.case_id,
             requested_seed=arguments.seed,
+            export_latent_diagnostics=arguments.export_latent_diagnostics,
             minimum_vram_gb=arguments.minimum_vram_gb,
             minimum_free_vram_gb=arguments.minimum_free_vram_gb,
             allow_unsafe_vram=arguments.allow_unsafe_vram,
