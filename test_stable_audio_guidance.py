@@ -23,11 +23,13 @@ from run_stable_audio_experiments import (
     save_latent_diagnostics,
     validate_envelope_probe_request,
     validate_latent_diagnostics_request,
+    validate_probe_guidance_mode,
 )
 from stable_audio_guidance import (
     _x0_from_v_prediction,
     active_latent_length,
     envelope_metrics,
+    guide_final_latents,
     guide_latents,
     latent_rms_envelope,
     predict_guidance_envelope,
@@ -62,6 +64,25 @@ class _CfgPipe:
 
 
 class StableAudioGuidanceTests(unittest.TestCase):
+    def test_final_probe_mode_requires_probe_and_valid_steps(self) -> None:
+        validate_probe_guidance_mode(
+            probe_guidance_mode="denoising",
+            final_guidance_steps=10,
+            envelope_probe_path=None,
+        )
+        with self.assertRaisesRegex(ValueError, "требует --envelope-probe"):
+            validate_probe_guidance_mode(
+                probe_guidance_mode="final",
+                final_guidance_steps=10,
+                envelope_probe_path=None,
+            )
+        with self.assertRaisesRegex(ValueError, "диапазоне"):
+            validate_probe_guidance_mode(
+                probe_guidance_mode="denoising",
+                final_guidance_steps=0,
+                envelope_probe_path=None,
+            )
+
     def test_envelope_probe_request_is_guarded(self) -> None:
         validate_envelope_probe_request(envelope_probe_path=None, max_new_pairs=None)
         with TemporaryDirectory() as directory:
@@ -338,6 +359,51 @@ class StableAudioGuidanceTests(unittest.TestCase):
         after_mse = envelope_metrics(target, after)["mse"]
         self.assertLess(after_mse, before_mse)
         self.assertLess(diagnostics["loss_after"], before_mse)
+
+    def test_final_probe_guidance_enforces_total_per_frame_trust_region(self) -> None:
+        probe = WaveformEnvelopeProbe(2, ridge_alpha=1.0)
+        probe.set_ridge_state(
+            feature_mean=torch.zeros(2),
+            feature_scale=torch.ones(2),
+            channel_weights=torch.tensor([1.0, -0.25]),
+            bias=0.0,
+        )
+        latents = torch.tensor(
+            [[[0.1, 0.5, 1.0, 0.7, 0.2], [0.3, 0.2, 0.1, 0.4, 0.6]]]
+        )
+        target = torch.tensor([1.0, 0.5, 0.0])
+        before = predict_guidance_envelope(
+            latents,
+            active_length=3,
+            envelope_probe=probe,
+        )[0]
+        corrected, final_loss, trace = guide_final_latents(
+            latents,
+            target_envelope=target,
+            active_length=3,
+            envelope_probe=probe,
+            gamma=1000.0,
+            gradient_clip_norm=1000.0,
+            max_relative_step=0.03,
+            steps=10,
+            reference_active_length=3,
+        )
+        after = predict_guidance_envelope(
+            corrected,
+            active_length=3,
+            envelope_probe=probe,
+        )[0]
+        self.assertLess(envelope_metrics(target, after)["mse"], envelope_metrics(target, before)["mse"])
+        self.assertAlmostEqual(final_loss, trace[-1]["loss_after"])
+        delta = corrected[:, :, :3] - latents[:, :, :3]
+        frame_relative = torch.linalg.vector_norm(delta, dim=1) / torch.linalg.vector_norm(
+            latents[:, :, :3], dim=1
+        )
+        self.assertLessEqual(float(frame_relative.max()), 0.030001)
+        self.assertTrue(torch.equal(corrected[:, :, 3:], latents[:, :, 3:]))
+        self.assertTrue(
+            all(float(row["max_frame_relative_correction"]) <= 0.030001 for row in trace)
+        )
 
     def test_fp16_early_sigma_stays_finite(self) -> None:
         latents = torch.zeros((1, 64, 11), dtype=torch.float16)

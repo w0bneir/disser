@@ -174,5 +174,12 @@ Probe подключается только явно через `--envelope-prob
 smoke-test с новым каталогом результатов:
 
 ```bat
-python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --envelope-probe models\envelope_probe.safetensors --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_probe_guidance_smoke
+python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --envelope-probe models\envelope_probe.safetensors --probe-guidance-mode final --final-guidance-steps 10 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_probe_guidance_smoke
 ```
+
+Режим `denoising` оставлен для абляционного сравнения, но не рекомендуется:
+35 локальных ограничений по 3% накопились в итоговое отклонение latent на 12.5%
+и позволили оптимизации обмануть surrogate. Режим `final` сначала завершает
+обычный denoising, затем оптимизирует только final latent. Каждая временная
+позиция всё время остаётся внутри 3% от исходного anchor, поэтому локальные
+шаги не могут накопиться в неограниченный drift.

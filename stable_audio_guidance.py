@@ -257,6 +257,109 @@ def guide_latents(
     return corrected, envelope.detach(), float(loss.detach().cpu()), diagnostics
 
 
+def guide_final_latents(
+    latents: torch.Tensor,
+    *,
+    target_envelope: torch.Tensor,
+    active_length: int,
+    envelope_probe: WaveformEnvelopeProbe,
+    gamma: float,
+    gradient_clip_norm: float,
+    max_relative_step: float,
+    steps: int,
+    reference_active_length: int | None = None,
+) -> tuple[torch.Tensor, float, list[dict[str, float | int]]]:
+    """Оптимизировать только final latent внутри суммарного per-frame trust region."""
+    if gamma <= 0:
+        raise ValueError("Final probe guidance требует gamma > 0")
+    if steps <= 0:
+        raise ValueError("Число final guidance шагов должно быть положительным")
+    if not 0 < max_relative_step <= 1:
+        raise ValueError("max_relative_step должен быть в диапазоне (0, 1]")
+    if reference_active_length is None:
+        reference_active_length = active_length
+    if reference_active_length <= 0:
+        raise ValueError("reference_active_length должен быть положительным")
+
+    anchor = latents.detach().float()
+    working = anchor.clone()
+    target = resample_target_envelope(
+        target_envelope.to(latents.device, torch.float32), active_length
+    )
+    duration_scale = max(1.0, active_length / reference_active_length)
+    anchor_active = anchor[:, :, :active_length]
+    active_latent_norm = torch.linalg.vector_norm(anchor_active).clamp_min(1e-8)
+    anchor_frame_norm = torch.linalg.vector_norm(anchor_active, dim=1)
+    trace: list[dict[str, float | int]] = []
+    last_loss = float("nan")
+
+    for index in range(steps):
+        candidate_input = working.detach().requires_grad_(True)
+        envelope = predict_guidance_envelope(
+            candidate_input,
+            active_length=active_length,
+            envelope_probe=envelope_probe,
+        )
+        loss = F.mse_loss(envelope, target.unsqueeze(0).expand_as(envelope))
+        gradient = torch.autograd.grad(loss, candidate_input, only_inputs=True)[0]
+        raw_gradient_norm = torch.linalg.vector_norm(gradient[:, :, :active_length])
+        gradient = _clip_gradient_norm(gradient, gradient_clip_norm)
+        proposed = candidate_input - gamma * duration_scale * gradient
+
+        proposed_delta = proposed[:, :, :active_length].detach() - anchor_active
+        proposed_frame_norm = torch.linalg.vector_norm(proposed_delta, dim=1)
+        maximum_frame_norm = max_relative_step * anchor_frame_norm
+        frame_scale = torch.clamp(
+            maximum_frame_norm / proposed_frame_norm.clamp_min(1e-8),
+            max=1.0,
+        )
+        projected_delta = proposed_delta * frame_scale.unsqueeze(1)
+        candidate = anchor.clone()
+        candidate[:, :, :active_length] = anchor_active + projected_delta
+
+        with torch.no_grad():
+            corrected_envelope = predict_guidance_envelope(
+                candidate,
+                active_length=active_length,
+                envelope_probe=envelope_probe,
+            )
+            loss_after = F.mse_loss(
+                corrected_envelope,
+                target.unsqueeze(0).expand_as(corrected_envelope),
+            )
+        if loss_after > loss:
+            break
+        working = candidate
+        correction_norm = torch.linalg.vector_norm(projected_delta)
+        frame_relative = torch.linalg.vector_norm(projected_delta, dim=1) / anchor_frame_norm.clamp_min(
+            1e-8
+        )
+        last_loss = float(loss_after.detach().cpu())
+        trace.append(
+            {
+                "step": index,
+                "sigma": 0.0,
+                "loss_before": float(loss.detach().cpu()),
+                "gradient_norm": float(raw_gradient_norm.detach().cpu()),
+                "correction_norm": float(correction_norm.detach().cpu()),
+                "active_latent_norm": float(active_latent_norm.detach().cpu()),
+                "relative_correction": float(
+                    (correction_norm / active_latent_norm).detach().cpu()
+                ),
+                "max_frame_relative_correction": float(frame_relative.max().detach().cpu()),
+                "duration_scale": duration_scale,
+                "loss_after": last_loss,
+            }
+        )
+
+    if not trace:
+        raise RuntimeError("Final probe guidance не смог уменьшить loss внутри trust region")
+    corrected = working.to(dtype=latents.dtype)
+    if not torch.isfinite(corrected).all():
+        raise FloatingPointError("Final probe guidance создал NaN/Inf")
+    return corrected, last_loss, trace
+
+
 def _prepare_conditions(
     pipe: Any,
     *,
@@ -363,6 +466,8 @@ def generate_sfx(
     max_relative_step: float = 0.03,
     guidance_reference_duration_seconds: float = 0.5,
     envelope_probe: WaveformEnvelopeProbe | None = None,
+    guidance_mode: str = "denoising",
+    final_guidance_steps: int = 10,
     return_active_latents: bool = False,
 ) -> StableAudioGenerationResult:
     """Выполнить baseline (gamma=0) или Direct Latent Guidance.
@@ -379,6 +484,12 @@ def generate_sfx(
         raise ValueError("Длительность и число шагов должны быть положительными")
     if guidance_reference_duration_seconds <= 0:
         raise ValueError("guidance_reference_duration_seconds должен быть положительным")
+    if guidance_mode not in {"denoising", "final"}:
+        raise ValueError("guidance_mode должен быть 'denoising' или 'final'")
+    if gamma > 0 and guidance_mode == "final" and envelope_probe is None:
+        raise ValueError("Final guidance требует waveform-aware envelope probe")
+    if final_guidance_steps <= 0:
+        raise ValueError("final_guidance_steps должен быть положительным")
 
     device = torch.device("cuda")
     latents = initial_latents.detach().clone().to(device)
@@ -422,7 +533,11 @@ def generate_sfx(
             guidance_scale=guidance_scale,
         )
 
-        if gamma > 0 and index >= int(len(timesteps) * guidance_start_fraction):
+        if (
+            gamma > 0
+            and guidance_mode == "denoising"
+            and index >= int(len(timesteps) * guidance_start_fraction)
+        ):
             latents, _, last_loss, step_diagnostics = guide_latents(
                 latents,
                 model_output,
@@ -457,6 +572,21 @@ def generate_sfx(
         ).prev_sample
         if not torch.isfinite(latents).all():
             raise FloatingPointError(f"NaN/Inf после шага scheduler #{index}; запись WAV отменена")
+
+    if gamma > 0 and guidance_mode == "final":
+        if envelope_probe is None:
+            raise AssertionError("Final guidance probe был проверен до denoising")
+        latents, last_loss, guidance_trace = guide_final_latents(
+            latents,
+            target_envelope=target_envelope,
+            active_length=active_length,
+            envelope_probe=envelope_probe,
+            gamma=gamma,
+            gradient_clip_norm=gradient_clip_norm,
+            max_relative_step=max_relative_step,
+            steps=final_guidance_steps,
+            reference_active_length=reference_active_length,
+        )
 
     with torch.no_grad():
         waveform = pipe.vae.decode(latents).sample

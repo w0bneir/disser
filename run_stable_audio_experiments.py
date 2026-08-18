@@ -205,6 +205,20 @@ def validate_envelope_probe_request(
         raise FileNotFoundError(f"Не найден JSON envelope probe: {metadata_path}")
 
 
+def validate_probe_guidance_mode(
+    *,
+    probe_guidance_mode: str,
+    final_guidance_steps: int,
+    envelope_probe_path: Path | None,
+) -> None:
+    if probe_guidance_mode not in {"denoising", "final"}:
+        raise ValueError("Неизвестный probe guidance mode")
+    if not 1 <= final_guidance_steps <= 100:
+        raise ValueError("--final-guidance-steps должен быть в диапазоне [1, 100]")
+    if probe_guidance_mode == "final" and envelope_probe_path is None:
+        raise ValueError("--probe-guidance-mode final требует --envelope-probe")
+
+
 def load_reference_for_analysis(
     path: str | Path,
     *,
@@ -441,12 +455,12 @@ def save_guidance_trace(
     figure, loss_axis = plt.subplots(figsize=(9, 4.5))
     loss_axis.plot(steps, loss_before, label="Loss до коррекции", color="#777777", linestyle="--")
     loss_axis.plot(steps, loss_after, label="Loss после коррекции", color="#bf2424")
-    loss_axis.set_xlabel("Шаг denoising")
-    loss_axis.set_ylabel("MSE latent-огибающей")
+    loss_axis.set_xlabel("Шаг guidance")
+    loss_axis.set_ylabel("MSE guidance-огибающей")
     loss_axis.grid(alpha=0.25)
     correction_axis = loss_axis.twinx()
     correction_axis.plot(steps, relative, label="Размер коррекции", color="#2457a6", alpha=0.55)
-    correction_axis.set_ylabel("Коррекция относительно нормы латента, %")
+    correction_axis.set_ylabel("Коррекция относительно нормы latent, %")
     lines = loss_axis.lines + correction_axis.lines
     loss_axis.legend(lines, [line.get_label() for line in lines], loc="best")
     figure.tight_layout()
@@ -493,6 +507,8 @@ def run(
     requested_seed: int | None,
     export_latent_diagnostics: bool,
     envelope_probe_path: Path | None,
+    probe_guidance_mode: str,
+    final_guidance_steps: int,
     minimum_vram_gb: float,
     minimum_free_vram_gb: float,
     allow_unsafe_vram: bool,
@@ -507,6 +523,11 @@ def run(
     validate_envelope_probe_request(
         envelope_probe_path=envelope_probe_path,
         max_new_pairs=max_new_pairs,
+    )
+    validate_probe_guidance_mode(
+        probe_guidance_mode=probe_guidance_mode,
+        final_guidance_steps=final_guidance_steps,
+        envelope_probe_path=envelope_probe_path,
     )
     envelope_probe = None
     if envelope_probe_path is not None:
@@ -563,7 +584,9 @@ def run(
             "[+] Waveform-aware envelope probe загружен: "
             f"{envelope_probe.config()['architecture']}"
         )
-    guidance_envelope_mode = "waveform_probe" if envelope_probe is not None else "latent_rms"
+    guidance_envelope_mode = "latent_rms"
+    if envelope_probe is not None:
+        guidance_envelope_mode = f"waveform_probe_{probe_guidance_mode}"
     analysis_sample_rate = int(pipe.vae.config.sampling_rate)
     print(f"[+] Параметры guidance: gamma={guidance_gamma:g}")
     completed_pairs = 0
@@ -605,6 +628,8 @@ def run(
                 initial_latents=initial_latents,
                 gamma=0.0,
                 envelope_probe=envelope_probe,
+                guidance_mode=probe_guidance_mode,
+                final_guidance_steps=final_guidance_steps,
                 return_active_latents=export_latent_diagnostics,
             )
             run_dir.mkdir(parents=True, exist_ok=True)
@@ -628,6 +653,8 @@ def run(
                     config["guidance_reference_duration_seconds"]
                 ),
                 envelope_probe=envelope_probe,
+                guidance_mode=probe_guidance_mode,
+                final_guidance_steps=final_guidance_steps,
                 return_active_latents=export_latent_diagnostics,
             )
             save_wav(guided_path, guided.audio, guided.sample_rate)
@@ -711,6 +738,8 @@ def run(
                 "gradient_clip_norm": float(config["gradient_clip_norm"]),
                 "guidance_start_fraction": float(config["guidance_start_fraction"]),
                 "max_relative_step": float(config["max_relative_step"]),
+                "probe_guidance_mode": probe_guidance_mode,
+                "final_guidance_steps": final_guidance_steps,
                 "guidance_reference_duration_seconds": float(
                     config["guidance_reference_duration_seconds"]
                 ),
@@ -836,6 +865,21 @@ def parse_args() -> argparse.Namespace:
             "требует --max-new-pairs 1."
         ),
     )
+    parser.add_argument(
+        "--probe-guidance-mode",
+        choices=("denoising", "final"),
+        default="denoising",
+        help=(
+            "denoising применяет probe на каждом шаге; final выполняет "
+            "projected final-latent guidance с суммарным trust region."
+        ),
+    )
+    parser.add_argument(
+        "--final-guidance-steps",
+        type=int,
+        default=10,
+        help="Число projected-gradient шагов для --probe-guidance-mode final.",
+    )
     parser.add_argument("--minimum-vram-gb", type=float, default=MINIMUM_GUIDANCE_VRAM_GB)
     parser.add_argument("--minimum-free-vram-gb", type=float, default=MINIMUM_GUIDANCE_FREE_VRAM_GB)
     parser.add_argument(
@@ -864,6 +908,8 @@ if __name__ == "__main__":
             requested_seed=arguments.seed,
             export_latent_diagnostics=arguments.export_latent_diagnostics,
             envelope_probe_path=arguments.envelope_probe,
+            probe_guidance_mode=arguments.probe_guidance_mode,
+            final_guidance_steps=arguments.final_guidance_steps,
             minimum_vram_gb=arguments.minimum_vram_gb,
             minimum_free_vram_gb=arguments.minimum_free_vram_gb,
             allow_unsafe_vram=arguments.allow_unsafe_vram,
