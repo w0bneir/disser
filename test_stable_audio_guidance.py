@@ -14,6 +14,7 @@ from run_stable_audio_experiments import (
     PAIR_OUTPUT_FILES,
     load_reference_for_analysis,
     pair_is_complete,
+    resolve_guidance_gamma,
     resolve_inference_steps,
 )
 from stable_audio_guidance import (
@@ -118,6 +119,37 @@ class StableAudioGuidanceTests(unittest.TestCase):
                 requested_steps=10,
                 max_new_pairs=1,
             )
+
+    def test_gamma_override_requires_one_pair_and_valid_range(self) -> None:
+        self.assertEqual(
+            resolve_guidance_gamma(
+                configured_gamma=20.0,
+                requested_gamma=None,
+                max_new_pairs=None,
+            ),
+            20.0,
+        )
+        self.assertEqual(
+            resolve_guidance_gamma(
+                configured_gamma=20.0,
+                requested_gamma=50.0,
+                max_new_pairs=1,
+            ),
+            50.0,
+        )
+        with self.assertRaisesRegex(ValueError, "--max-new-pairs 1"):
+            resolve_guidance_gamma(
+                configured_gamma=20.0,
+                requested_gamma=50.0,
+                max_new_pairs=None,
+            )
+        for invalid_gamma in (0.0, 50.1, float("inf"), float("nan")):
+            with self.subTest(gamma=invalid_gamma), self.assertRaisesRegex(ValueError, "диапазоне"):
+                resolve_guidance_gamma(
+                    configured_gamma=20.0,
+                    requested_gamma=invalid_gamma,
+                    max_new_pairs=1,
+                )
 
     def test_latent_envelope_shape_and_normalization(self) -> None:
         latents = torch.arange(2 * 4 * 8, dtype=torch.float32).reshape(2, 4, 8)

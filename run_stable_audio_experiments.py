@@ -110,6 +110,25 @@ def resolve_inference_steps(
     return requested_steps
 
 
+def resolve_guidance_gamma(
+    *,
+    configured_gamma: float,
+    requested_gamma: float | None,
+    max_new_pairs: int | None,
+) -> float:
+    """Выбрать gamma для одиночного воспроизводимого диагностического запуска."""
+    if requested_gamma is None:
+        return configured_gamma
+    if not np.isfinite(requested_gamma) or not 0 < requested_gamma <= 50:
+        raise ValueError("--gamma должен быть в диапазоне (0, 50]")
+    if max_new_pairs != 1:
+        raise ValueError(
+            "Переопределение gamma требует --max-new-pairs 1, "
+            "чтобы не запустить серию GPU-пар"
+        )
+    return requested_gamma
+
+
 def pair_is_complete(run_dir: Path) -> bool:
     """Считать пару готовой только при наличии всех обязательных артефактов."""
     return all((run_dir / name).is_file() for name in PAIR_OUTPUT_FILES)
@@ -302,6 +321,7 @@ def run(
     allow_download: bool,
     smoke_test: bool,
     requested_num_inference_steps: int | None,
+    requested_gamma: float | None,
     minimum_vram_gb: float,
     minimum_free_vram_gb: float,
     allow_unsafe_vram: bool,
@@ -326,6 +346,11 @@ def run(
         requested_steps=requested_num_inference_steps,
         max_new_pairs=max_new_pairs,
     )
+    guidance_gamma = resolve_guidance_gamma(
+        configured_gamma=float(config["gamma"]),
+        requested_gamma=requested_gamma,
+        max_new_pairs=max_new_pairs,
+    )
     results_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = results_dir / "metrics.csv"
     rows: list[dict[str, float | int | str]] = []
@@ -338,6 +363,7 @@ def run(
     print("[+] Pipeline готов; подготавливаются референс и начальный latent.")
     device = torch.device("cuda")
     analysis_sample_rate = int(pipe.vae.config.sampling_rate)
+    print(f"[+] Параметры guidance: gamma={guidance_gamma:g}")
     completed_pairs = 0
 
     for case in cases:
@@ -387,7 +413,7 @@ def run(
                 seed=int(seed),
                 initial_latents=initial_latents,
                 target_envelope=target,
-                gamma=float(config["gamma"]),
+                gamma=guidance_gamma,
                 gradient_clip_norm=float(config["gradient_clip_norm"]),
                 guidance_start_fraction=float(config["guidance_start_fraction"]),
                 max_relative_step=float(config["max_relative_step"]),
@@ -425,7 +451,7 @@ def run(
                 "generated_envelope_points": int(guided_envelope.numel()),
                 "num_inference_steps": steps,
                 "cfg_scale": float(config["cfg_scale"]),
-                "gamma": float(config["gamma"]),
+                "gamma": guidance_gamma,
                 "gradient_clip_norm": float(config["gradient_clip_norm"]),
                 "guidance_start_fraction": float(config["guidance_start_fraction"]),
                 "max_relative_step": float(config["max_relative_step"]),
@@ -456,7 +482,7 @@ def run(
                         case_id=case["id"],
                         seed=int(seed),
                         mode="guided",
-                        gamma=float(config["gamma"]),
+                        gamma=guidance_gamma,
                         metrics=guided_metrics,
                         elapsed_seconds=guided.elapsed_seconds,
                         peak_vram_mb=guided.peak_vram_mb,
@@ -505,6 +531,15 @@ def parse_args() -> argparse.Namespace:
             "Не совмещается с --smoke-test."
         ),
     )
+    parser.add_argument(
+        "--gamma",
+        type=float,
+        default=None,
+        help=(
+            "Переопределить силу Direct Latent Guidance в диапазоне (0, 50]; "
+            "требует --max-new-pairs 1."
+        ),
+    )
     parser.add_argument("--minimum-vram-gb", type=float, default=MINIMUM_GUIDANCE_VRAM_GB)
     parser.add_argument("--minimum-free-vram-gb", type=float, default=MINIMUM_GUIDANCE_FREE_VRAM_GB)
     parser.add_argument(
@@ -528,6 +563,7 @@ if __name__ == "__main__":
             allow_download=arguments.allow_download,
             smoke_test=arguments.smoke_test,
             requested_num_inference_steps=arguments.num_inference_steps,
+            requested_gamma=arguments.gamma,
             minimum_vram_gb=arguments.minimum_vram_gb,
             minimum_free_vram_gb=arguments.minimum_free_vram_gb,
             allow_unsafe_vram=arguments.allow_unsafe_vram,

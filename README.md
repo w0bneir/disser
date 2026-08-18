@@ -110,3 +110,11 @@ python run_stable_audio_experiments.py --results-dir results\stable_audio_trial_
 Референс и сгенерированный WAV анализируются на одной частоте модели (44,1 кГц).
 Это принципиально для корректной RMS-метрики: окно в 2048 отсчётов должно иметь
 одинаковую физическую длительность у обеих сравниваемых записей.
+
+Для одиночной проверки силы guidance можно переопределить `gamma`, не изменяя
+JSON-конфигурацию. Диапазон ограничен пользовательским интервалом `(0, 50]`, а
+команда обязательно требует предохранитель `--max-new-pairs 1`:
+
+```bat
+python run_stable_audio_experiments.py --num-inference-steps 20 --gamma 50 --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\stable_audio_20step_gamma50
+```
