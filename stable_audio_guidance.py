@@ -11,6 +11,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from envelope_probe import WaveformEnvelopeProbe
+
 
 @dataclass
 class StableAudioGenerationResult:
@@ -19,6 +21,7 @@ class StableAudioGenerationResult:
     audio: np.ndarray
     sample_rate: int
     latent_envelope: torch.Tensor
+    guidance_envelope: torch.Tensor
     active_latents: torch.Tensor | None
     guidance_loss: float | None
     guidance_trace: list[dict[str, float | int]]
@@ -52,6 +55,28 @@ def latent_rms_envelope(latents: torch.Tensor, *, active_length: int | None = No
         )
     energy = torch.sqrt(latents[:, :, :active_length].square().mean(dim=1) + 1e-8)
     return normalize_per_sample(energy)
+
+
+def predict_guidance_envelope(
+    latents: torch.Tensor,
+    *,
+    active_length: int,
+    envelope_probe: WaveformEnvelopeProbe | None,
+) -> torch.Tensor:
+    """Получить огибающую старым RMS или валидированным waveform-probe."""
+    if envelope_probe is None:
+        envelope = latent_rms_envelope(latents, active_length=active_length)
+    else:
+        envelope = envelope_probe(latents, active_length=active_length)
+    expected_shape = (latents.shape[0], active_length)
+    if tuple(envelope.shape) != expected_shape:
+        raise ValueError(
+            f"Guidance envelope должна иметь форму {expected_shape}, "
+            f"получено {tuple(envelope.shape)}"
+        )
+    if not torch.isfinite(envelope).all():
+        raise FloatingPointError("Guidance envelope содержит NaN/Inf")
+    return envelope
 
 
 def resample_target_envelope(target: torch.Tensor, target_length: int) -> torch.Tensor:
@@ -131,6 +156,7 @@ def guide_latents(
     gamma: float,
     gradient_clip_norm: float,
     max_relative_step: float,
+    envelope_probe: WaveformEnvelopeProbe | None = None,
     reference_active_length: int | None = None,
     sigma_data: float = 1.0,
     prediction_type: str = "v_prediction",
@@ -153,7 +179,11 @@ def guide_latents(
         raise ValueError("reference_active_length должен быть положительным")
     duration_scale = max(1.0, active_length / reference_active_length)
     if gamma == 0:
-        envelope = latent_rms_envelope(latents, active_length=active_length)
+        envelope = predict_guidance_envelope(
+            latents,
+            active_length=active_length,
+            envelope_probe=envelope_probe,
+        )
         return latents, envelope.detach(), 0.0, {
             "gradient_norm": 0.0,
             "correction_norm": 0.0,
@@ -176,7 +206,11 @@ def guide_latents(
         sigma_data=sigma_data,
         prediction_type=prediction_type,
     )
-    envelope = latent_rms_envelope(predicted_x0, active_length=active_length)
+    envelope = predict_guidance_envelope(
+        predicted_x0,
+        active_length=active_length,
+        envelope_probe=envelope_probe,
+    )
     loss = F.mse_loss(envelope, target.unsqueeze(0).expand_as(envelope))
     gradient = torch.autograd.grad(loss, working_latents, only_inputs=True)[0]
     raw_gradient_norm = torch.linalg.vector_norm(gradient[:, :, :active_length])
@@ -206,7 +240,11 @@ def guide_latents(
             sigma_data=sigma_data,
             prediction_type=prediction_type,
         )
-        corrected_envelope = latent_rms_envelope(corrected_x0, active_length=active_length)
+        corrected_envelope = predict_guidance_envelope(
+            corrected_x0,
+            active_length=active_length,
+            envelope_probe=envelope_probe,
+        )
         loss_after = F.mse_loss(corrected_envelope, target.unsqueeze(0).expand_as(corrected_envelope))
     diagnostics = {
         "gradient_norm": float(raw_gradient_norm.detach().cpu()),
@@ -324,6 +362,7 @@ def generate_sfx(
     guidance_start_fraction: float = 0.5,
     max_relative_step: float = 0.03,
     guidance_reference_duration_seconds: float = 0.5,
+    envelope_probe: WaveformEnvelopeProbe | None = None,
     return_active_latents: bool = False,
 ) -> StableAudioGenerationResult:
     """Выполнить baseline (gamma=0) или Direct Latent Guidance.
@@ -393,6 +432,7 @@ def generate_sfx(
                 gamma=gamma,
                 gradient_clip_norm=gradient_clip_norm,
                 max_relative_step=max_relative_step,
+                envelope_probe=envelope_probe,
                 reference_active_length=reference_active_length,
                 sigma_data=float(pipe.scheduler.config.sigma_data),
                 prediction_type=str(pipe.scheduler.config.prediction_type),
@@ -425,6 +465,12 @@ def generate_sfx(
     waveform_length = int(duration_seconds * int(pipe.vae.config.sampling_rate))
     waveform = waveform[:, :, :waveform_length]
     final_envelope = latent_rms_envelope(latents, active_length=active_length)[0].detach().cpu()
+    with torch.no_grad():
+        final_guidance_envelope = predict_guidance_envelope(
+            latents,
+            active_length=active_length,
+            envelope_probe=envelope_probe,
+        )[0].detach().cpu()
     active_latents_cpu = None
     if return_active_latents:
         active_latents_cpu = latents[0, :, :active_length].detach().to(device="cpu", dtype=torch.float16)
@@ -436,6 +482,7 @@ def generate_sfx(
         audio=audio,
         sample_rate=int(pipe.vae.config.sampling_rate),
         latent_envelope=final_envelope,
+        guidance_envelope=final_guidance_envelope,
         active_latents=active_latents_cpu,
         guidance_loss=last_loss,
         guidance_trace=guidance_trace,

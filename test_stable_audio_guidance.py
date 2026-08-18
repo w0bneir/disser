@@ -11,6 +11,7 @@ import numpy as np
 import torch
 
 from analyzer import load_audio
+from envelope_probe import WaveformEnvelopeProbe
 from run_stable_audio_experiments import (
     PAIR_OUTPUT_FILES,
     LATENT_DIAGNOSTICS_FILE,
@@ -20,6 +21,7 @@ from run_stable_audio_experiments import (
     resolve_guidance_gamma,
     resolve_inference_steps,
     save_latent_diagnostics,
+    validate_envelope_probe_request,
     validate_latent_diagnostics_request,
 )
 from stable_audio_guidance import (
@@ -28,6 +30,7 @@ from stable_audio_guidance import (
     envelope_metrics,
     guide_latents,
     latent_rms_envelope,
+    predict_guidance_envelope,
     resample_target_envelope,
     predict_noise_sequential_cfg,
 )
@@ -59,6 +62,23 @@ class _CfgPipe:
 
 
 class StableAudioGuidanceTests(unittest.TestCase):
+    def test_envelope_probe_request_is_guarded(self) -> None:
+        validate_envelope_probe_request(envelope_probe_path=None, max_new_pairs=None)
+        with TemporaryDirectory() as directory:
+            weights = Path(directory) / "probe.safetensors"
+            metadata = weights.with_suffix(".json")
+            weights.touch()
+            metadata.touch()
+            validate_envelope_probe_request(
+                envelope_probe_path=weights,
+                max_new_pairs=1,
+            )
+            with self.assertRaisesRegex(ValueError, "--max-new-pairs 1"):
+                validate_envelope_probe_request(
+                    envelope_probe_path=weights,
+                    max_new_pairs=None,
+                )
+
     def test_resume_requires_complete_pair_artifacts(self) -> None:
         with TemporaryDirectory() as directory:
             run_dir = Path(directory)
@@ -282,6 +302,43 @@ class StableAudioGuidanceTests(unittest.TestCase):
         self.assertLess(after_mse, before_mse)
         self.assertLess(diagnostics["loss_after"], before_mse)
 
+    def test_probe_guidance_moves_probe_loss_down(self) -> None:
+        probe = WaveformEnvelopeProbe(2, ridge_alpha=1.0)
+        probe.set_ridge_state(
+            feature_mean=torch.zeros(2),
+            feature_scale=torch.ones(2),
+            channel_weights=torch.tensor([1.0, -0.25]),
+            bias=0.0,
+        )
+        latents = torch.tensor([[[0.1, 0.5, 1.0], [0.3, 0.2, 0.1]]])
+        prediction = torch.zeros_like(latents)
+        target = torch.tensor([1.0, 0.5, 0.0])
+        before = predict_guidance_envelope(
+            latents,
+            active_length=3,
+            envelope_probe=probe,
+        )[0]
+        before_mse = envelope_metrics(target, before)["mse"]
+        corrected, _, _, diagnostics = guide_latents(
+            latents,
+            prediction,
+            sigma=0.0,
+            target_envelope=target,
+            active_length=3,
+            gamma=0.1,
+            gradient_clip_norm=10.0,
+            max_relative_step=1.0,
+            envelope_probe=probe,
+        )
+        after = predict_guidance_envelope(
+            corrected,
+            active_length=3,
+            envelope_probe=probe,
+        )[0]
+        after_mse = envelope_metrics(target, after)["mse"]
+        self.assertLess(after_mse, before_mse)
+        self.assertLess(diagnostics["loss_after"], before_mse)
+
     def test_fp16_early_sigma_stays_finite(self) -> None:
         latents = torch.zeros((1, 64, 11), dtype=torch.float16)
         prediction = torch.zeros_like(latents)
@@ -294,6 +351,26 @@ class StableAudioGuidanceTests(unittest.TestCase):
             gamma=0.5,
             gradient_clip_norm=0.05,
             max_relative_step=0.03,
+        )
+        self.assertTrue(torch.isfinite(corrected).all())
+        self.assertTrue(torch.isfinite(envelope).all())
+        self.assertLessEqual(diagnostics["relative_correction"], 0.030001)
+
+    def test_probe_fp16_early_sigma_stays_finite(self) -> None:
+        generator = torch.Generator().manual_seed(17)
+        latents = torch.randn((1, 64, 11), generator=generator, dtype=torch.float16)
+        prediction = torch.randn((1, 64, 11), generator=generator, dtype=torch.float16)
+        probe = WaveformEnvelopeProbe(64, ridge_alpha=1.0)
+        corrected, envelope, _, diagnostics = guide_latents(
+            latents,
+            prediction,
+            sigma=500.0,
+            target_envelope=torch.linspace(0, 1, 11),
+            active_length=11,
+            gamma=50.0,
+            gradient_clip_norm=0.1,
+            max_relative_step=0.03,
+            envelope_probe=probe,
         )
         self.assertTrue(torch.isfinite(corrected).all())
         self.assertTrue(torch.isfinite(envelope).all())

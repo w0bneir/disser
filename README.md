@@ -167,3 +167,12 @@ python train_envelope_probe.py results\probe_dataset --output models\envelope_pr
 На полностью отложенном seed 2026 для обоих case средний Pearson вырос с
 `0.6166` до `0.8238`, а MSE снизился с `0.0951` до `0.0360`. Контрольный барьер
 пройден; checkpoint сохранён как `models/envelope_probe.safetensors`.
+
+Probe подключается только явно через `--envelope-probe` и пока остаётся
+ограниченным одной парой. Старый latent-RMS без этого флага работает без
+изменений. Первый GPU-запуск после интеграции должен быть только 4-шаговым
+smoke-test с новым каталогом результатов:
+
+```bat
+python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --envelope-probe models\envelope_probe.safetensors --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_probe_guidance_smoke
+```

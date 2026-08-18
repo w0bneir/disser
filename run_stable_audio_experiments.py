@@ -19,6 +19,7 @@ import torch
 
 from analyzer import extract_rms_envelope, load_audio
 from audio_io import save_wav
+from envelope_probe import load_waveform_envelope_probe
 from stable_audio_guidance import (
     envelope_metrics,
     generate_sfx,
@@ -184,6 +185,24 @@ def validate_latent_diagnostics_request(
             "--export-latent-diagnostics требует --max-new-pairs 1, "
             "чтобы raw latent экспортировался только для одной GPU-пары"
         )
+
+
+def validate_envelope_probe_request(
+    *,
+    envelope_probe_path: Path | None,
+    max_new_pairs: int | None,
+) -> None:
+    if envelope_probe_path is None:
+        return
+    if max_new_pairs != 1:
+        raise ValueError(
+            "--envelope-probe требует --max-new-pairs 1 до завершения GPU smoke-test"
+        )
+    if not envelope_probe_path.is_file():
+        raise FileNotFoundError(f"Не найдены веса envelope probe: {envelope_probe_path}")
+    metadata_path = envelope_probe_path.with_suffix(".json")
+    if not metadata_path.is_file():
+        raise FileNotFoundError(f"Не найден JSON envelope probe: {metadata_path}")
 
 
 def load_reference_for_analysis(
@@ -473,6 +492,7 @@ def run(
     requested_case_id: str | None,
     requested_seed: int | None,
     export_latent_diagnostics: bool,
+    envelope_probe_path: Path | None,
     minimum_vram_gb: float,
     minimum_free_vram_gb: float,
     allow_unsafe_vram: bool,
@@ -484,6 +504,14 @@ def run(
         export_latent_diagnostics=export_latent_diagnostics,
         max_new_pairs=max_new_pairs,
     )
+    validate_envelope_probe_request(
+        envelope_probe_path=envelope_probe_path,
+        max_new_pairs=max_new_pairs,
+    )
+    envelope_probe = None
+    if envelope_probe_path is not None:
+        envelope_probe = load_waveform_envelope_probe(envelope_probe_path, device="cpu")
+        print("[+] Envelope probe checkpoint проверен на CPU.")
     config = read_config(config_path)
     require_safe_gpu(
         minimum_vram_gb=minimum_vram_gb,
@@ -523,6 +551,19 @@ def run(
     pipe = load_stable_audio(config.get("model_id", DEFAULT_MODEL_ID), local_files_only=not allow_download)
     print("[+] Pipeline готов; подготавливаются референс и начальный latent.")
     device = torch.device("cuda")
+    if envelope_probe is not None:
+        expected_channels = int(pipe.transformer.config.in_channels)
+        if envelope_probe.latent_channels != expected_channels:
+            raise ValueError(
+                f"Probe ожидает {envelope_probe.latent_channels} каналов, "
+                f"модель использует {expected_channels}"
+            )
+        envelope_probe.to(device=device)
+        print(
+            "[+] Waveform-aware envelope probe загружен: "
+            f"{envelope_probe.config()['architecture']}"
+        )
+    guidance_envelope_mode = "waveform_probe" if envelope_probe is not None else "latent_rms"
     analysis_sample_rate = int(pipe.vae.config.sampling_rate)
     print(f"[+] Параметры guidance: gamma={guidance_gamma:g}")
     completed_pairs = 0
@@ -563,6 +604,7 @@ def run(
                 seed=int(seed),
                 initial_latents=initial_latents,
                 gamma=0.0,
+                envelope_probe=envelope_probe,
                 return_active_latents=export_latent_diagnostics,
             )
             run_dir.mkdir(parents=True, exist_ok=True)
@@ -585,6 +627,7 @@ def run(
                 guidance_reference_duration_seconds=float(
                     config["guidance_reference_duration_seconds"]
                 ),
+                envelope_probe=envelope_probe,
                 return_active_latents=export_latent_diagnostics,
             )
             save_wav(guided_path, guided.audio, guided.sample_rate)
@@ -600,6 +643,35 @@ def run(
             target_for_guided = resample_target_envelope(target, guided_envelope.numel())
             baseline_metrics = envelope_metrics(target_for_baseline, baseline_envelope)
             guided_metrics = envelope_metrics(target_for_guided, guided_envelope)
+            target_for_baseline_guidance = resample_target_envelope(
+                target, baseline.guidance_envelope.numel()
+            )
+            target_for_guided_guidance = resample_target_envelope(
+                target, guided.guidance_envelope.numel()
+            )
+            baseline_guidance_for_waveform = resample_target_envelope(
+                baseline.guidance_envelope, baseline_envelope.numel()
+            )
+            guided_guidance_for_waveform = resample_target_envelope(
+                guided.guidance_envelope, guided_envelope.numel()
+            )
+            guidance_envelope_metadata = {
+                "mode": guidance_envelope_mode,
+                "probe": envelope_probe.config() if envelope_probe is not None else None,
+                "weights_path": str(envelope_probe_path) if envelope_probe_path is not None else None,
+                "target_vs_baseline": envelope_metrics(
+                    target_for_baseline_guidance, baseline.guidance_envelope
+                ),
+                "target_vs_guided": envelope_metrics(
+                    target_for_guided_guidance, guided.guidance_envelope
+                ),
+                "baseline_vs_waveform": envelope_metrics(
+                    baseline_guidance_for_waveform, baseline_envelope
+                ),
+                "guided_vs_waveform": envelope_metrics(
+                    guided_guidance_for_waveform, guided_envelope
+                ),
+            }
             latent_diagnostics_metadata = None
             if export_latent_diagnostics:
                 latent_diagnostics_metadata = save_latent_diagnostics(
@@ -644,8 +716,12 @@ def run(
                 ),
                 "baseline": baseline_metrics,
                 "guided": guided_metrics,
-                "guided_final_latent_loss": guided.guidance_loss,
+                "guided_final_guidance_loss": guided.guidance_loss,
+                "guided_final_latent_loss": (
+                    guided.guidance_loss if envelope_probe is None else None
+                ),
                 "guidance_trace": guided.guidance_trace,
+                "guidance_envelope": guidance_envelope_metadata,
             }
             if latent_diagnostics_metadata is not None:
                 metadata["latent_diagnostics"] = latent_diagnostics_metadata
@@ -689,7 +765,10 @@ def run(
             if guided.guidance_trace:
                 first_loss = float(guided.guidance_trace[0]["loss_before"])
                 final_loss = float(guided.guidance_trace[-1]["loss_after"])
-                print(f"      latent loss: {first_loss:.4f} -> {final_loss:.4f}")
+                print(
+                    f"      guidance loss ({guidance_envelope_mode}): "
+                    f"{first_loss:.4f} -> {final_loss:.4f}"
+                )
             del baseline, guided, initial_latents
             release_gpu()
             completed_pairs += 1
@@ -748,6 +827,15 @@ def parse_args() -> argparse.Namespace:
             "требует --max-new-pairs 1."
         ),
     )
+    parser.add_argument(
+        "--envelope-probe",
+        type=Path,
+        default=None,
+        help=(
+            "Использовать validated waveform-aware probe вместо latent RMS; "
+            "требует --max-new-pairs 1."
+        ),
+    )
     parser.add_argument("--minimum-vram-gb", type=float, default=MINIMUM_GUIDANCE_VRAM_GB)
     parser.add_argument("--minimum-free-vram-gb", type=float, default=MINIMUM_GUIDANCE_FREE_VRAM_GB)
     parser.add_argument(
@@ -775,6 +863,7 @@ if __name__ == "__main__":
             requested_case_id=arguments.case_id,
             requested_seed=arguments.seed,
             export_latent_diagnostics=arguments.export_latent_diagnostics,
+            envelope_probe_path=arguments.envelope_probe,
             minimum_vram_gb=arguments.minimum_vram_gb,
             minimum_free_vram_gb=arguments.minimum_free_vram_gb,
             allow_unsafe_vram=arguments.allow_unsafe_vram,
