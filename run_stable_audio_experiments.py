@@ -67,6 +67,7 @@ def read_config(path: Path) -> dict[str, Any]:
         "gradient_clip_norm",
         "guidance_start_fraction",
         "max_relative_step",
+        "guidance_reference_duration_seconds",
         "cases",
     }
     missing = required.difference(config)
@@ -127,6 +128,41 @@ def resolve_guidance_gamma(
             "чтобы не запустить серию GPU-пар"
         )
     return requested_gamma
+
+
+def resolve_experiment_selection(
+    *,
+    configured_cases: list[dict[str, Any]],
+    configured_seeds: list[int],
+    requested_case_id: str | None,
+    requested_seed: int | None,
+    smoke_test: bool,
+    max_new_pairs: int | None,
+) -> tuple[list[dict[str, Any]], list[int]]:
+    """Выбрать один case/seed для диагностического запуска без правки JSON."""
+    if (requested_case_id is not None or requested_seed is not None) and max_new_pairs != 1:
+        raise ValueError(
+            "Переопределение case/seed требует --max-new-pairs 1, "
+            "чтобы не запустить серию GPU-пар"
+        )
+
+    cases = configured_cases
+    if requested_case_id is not None:
+        cases = [case for case in configured_cases if case["id"] == requested_case_id]
+        if not cases:
+            available = ", ".join(str(case["id"]) for case in configured_cases)
+            raise ValueError(f"Неизвестный --case-id {requested_case_id!r}; доступны: {available}")
+    elif smoke_test:
+        cases = configured_cases[:1]
+
+    seeds = configured_seeds
+    if requested_seed is not None:
+        if not 0 <= requested_seed <= 2**63 - 1:
+            raise ValueError("--seed должен быть в диапазоне [0, 2^63 - 1]")
+        seeds = [requested_seed]
+    elif smoke_test:
+        seeds = configured_seeds[:1]
+    return cases, seeds
 
 
 def pair_is_complete(run_dir: Path) -> bool:
@@ -322,6 +358,8 @@ def run(
     smoke_test: bool,
     requested_num_inference_steps: int | None,
     requested_gamma: float | None,
+    requested_case_id: str | None,
+    requested_seed: int | None,
     minimum_vram_gb: float,
     minimum_free_vram_gb: float,
     allow_unsafe_vram: bool,
@@ -338,8 +376,14 @@ def run(
     if preflight_only:
         print("[+] GPU preflight завершён. Модель не загружалась.")
         return
-    cases = config["cases"][:1] if smoke_test else config["cases"]
-    seeds = config["seeds"][:1] if smoke_test else config["seeds"]
+    cases, seeds = resolve_experiment_selection(
+        configured_cases=config["cases"],
+        configured_seeds=config["seeds"],
+        requested_case_id=requested_case_id,
+        requested_seed=requested_seed,
+        smoke_test=smoke_test,
+        max_new_pairs=max_new_pairs,
+    )
     steps = resolve_inference_steps(
         configured_steps=int(config["num_inference_steps"]),
         smoke_test=smoke_test,
@@ -417,6 +461,9 @@ def run(
                 gradient_clip_norm=float(config["gradient_clip_norm"]),
                 guidance_start_fraction=float(config["guidance_start_fraction"]),
                 max_relative_step=float(config["max_relative_step"]),
+                guidance_reference_duration_seconds=float(
+                    config["guidance_reference_duration_seconds"]
+                ),
             )
             save_wav(guided_path, guided.audio, guided.sample_rate)
             save_guidance_trace(
@@ -455,6 +502,9 @@ def run(
                 "gradient_clip_norm": float(config["gradient_clip_norm"]),
                 "guidance_start_fraction": float(config["guidance_start_fraction"]),
                 "max_relative_step": float(config["max_relative_step"]),
+                "guidance_reference_duration_seconds": float(
+                    config["guidance_reference_duration_seconds"]
+                ),
                 "baseline": baseline_metrics,
                 "guided": guided_metrics,
                 "guided_final_latent_loss": guided.guidance_loss,
@@ -540,6 +590,17 @@ def parse_args() -> argparse.Namespace:
             "требует --max-new-pairs 1."
         ),
     )
+    parser.add_argument(
+        "--case-id",
+        default=None,
+        help="Запустить только указанный case из конфигурации; требует --max-new-pairs 1.",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Запустить только указанный seed; требует --max-new-pairs 1.",
+    )
     parser.add_argument("--minimum-vram-gb", type=float, default=MINIMUM_GUIDANCE_VRAM_GB)
     parser.add_argument("--minimum-free-vram-gb", type=float, default=MINIMUM_GUIDANCE_FREE_VRAM_GB)
     parser.add_argument(
@@ -564,6 +625,8 @@ if __name__ == "__main__":
             smoke_test=arguments.smoke_test,
             requested_num_inference_steps=arguments.num_inference_steps,
             requested_gamma=arguments.gamma,
+            requested_case_id=arguments.case_id,
+            requested_seed=arguments.seed,
             minimum_vram_gb=arguments.minimum_vram_gb,
             minimum_free_vram_gb=arguments.minimum_free_vram_gb,
             allow_unsafe_vram=arguments.allow_unsafe_vram,

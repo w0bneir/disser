@@ -130,6 +130,7 @@ def guide_latents(
     gamma: float,
     gradient_clip_norm: float,
     max_relative_step: float,
+    reference_active_length: int | None = None,
     sigma_data: float = 1.0,
     prediction_type: str = "v_prediction",
 ) -> tuple[torch.Tensor, torch.Tensor, float, dict[str, float]]:
@@ -145,6 +146,11 @@ def guide_latents(
         raise ValueError("max_relative_step должен быть в диапазоне (0, 1]")
     if latents.shape != model_output.shape:
         raise ValueError("Латент и выход transformer должны иметь одинаковую форму")
+    if reference_active_length is None:
+        reference_active_length = active_length
+    if reference_active_length <= 0:
+        raise ValueError("reference_active_length должен быть положительным")
+    duration_scale = max(1.0, active_length / reference_active_length)
     if gamma == 0:
         envelope = latent_rms_envelope(latents, active_length=active_length)
         return latents, envelope.detach(), 0.0, {
@@ -152,6 +158,7 @@ def guide_latents(
             "correction_norm": 0.0,
             "active_latent_norm": float(torch.linalg.vector_norm(latents[:, :, :active_length].float()).cpu()),
             "relative_correction": 0.0,
+            "duration_scale": duration_scale,
             "loss_after": 0.0,
         }
 
@@ -174,7 +181,11 @@ def guide_latents(
     raw_gradient_norm = torch.linalg.vector_norm(gradient[:, :, :active_length])
     gradient = _clip_gradient_norm(gradient, gradient_clip_norm)
 
-    correction = -gamma * gradient
+    # При reduction="mean" относительная L2-сила градиента убывает примерно
+    # обратно пропорционально числу временных позиций. Компенсируем это, чтобы
+    # один gamma имел сопоставимый смысл для коротких и длинных SFX. Масштаб не
+    # ослабляет короткие записи и по-прежнему ограничен max_relative_step.
+    correction = -gamma * duration_scale * gradient
     correction_norm = torch.linalg.vector_norm(correction[:, :, :active_length])
     active_latent_norm = torch.linalg.vector_norm(working_latents[:, :, :active_length]).clamp_min(1e-8)
     maximum_correction_norm = max_relative_step * active_latent_norm
@@ -201,6 +212,7 @@ def guide_latents(
         "correction_norm": float(correction_norm.detach().cpu()),
         "active_latent_norm": float(active_latent_norm.detach().cpu()),
         "relative_correction": float((correction_norm / active_latent_norm).detach().cpu()),
+        "duration_scale": duration_scale,
         "loss_after": float(loss_after.detach().cpu()),
     }
     return corrected, envelope.detach(), float(loss.detach().cpu()), diagnostics
@@ -310,6 +322,7 @@ def generate_sfx(
     gradient_clip_norm: float = 0.05,
     guidance_start_fraction: float = 0.5,
     max_relative_step: float = 0.03,
+    guidance_reference_duration_seconds: float = 0.5,
 ) -> StableAudioGenerationResult:
     """Выполнить baseline (gamma=0) или Direct Latent Guidance.
 
@@ -323,12 +336,15 @@ def generate_sfx(
         raise ValueError("initial_latents должен иметь форму [batch, channels, time]")
     if duration_seconds <= 0 or num_inference_steps <= 0:
         raise ValueError("Длительность и число шагов должны быть положительными")
+    if guidance_reference_duration_seconds <= 0:
+        raise ValueError("guidance_reference_duration_seconds должен быть положительным")
 
     device = torch.device("cuda")
     latents = initial_latents.detach().clone().to(device)
     if latents.shape[0] != 1:
         raise ValueError("Демонстратор поддерживает batch_size=1")
     active_length = active_latent_length(pipe, duration_seconds)
+    reference_active_length = active_latent_length(pipe, guidance_reference_duration_seconds)
     pipe.scheduler.set_timesteps(num_inference_steps, device=device)
     timesteps = pipe.scheduler.timesteps
     text_duration, global_duration, do_cfg = _prepare_conditions(
@@ -375,6 +391,7 @@ def generate_sfx(
                 gamma=gamma,
                 gradient_clip_norm=gradient_clip_norm,
                 max_relative_step=max_relative_step,
+                reference_active_length=reference_active_length,
                 sigma_data=float(pipe.scheduler.config.sigma_data),
                 prediction_type=str(pipe.scheduler.config.prediction_type),
             )

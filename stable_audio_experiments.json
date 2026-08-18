@@ -7,6 +7,7 @@
   "gradient_clip_norm": 0.1,
   "guidance_start_fraction": 0.3,
   "max_relative_step": 0.03,
+  "guidance_reference_duration_seconds": 0.5,
   "negative_prompt": "music, melody, singing, speech, low quality, distortion, hiss",
   "cases": [
     {

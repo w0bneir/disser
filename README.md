@@ -118,3 +118,16 @@ JSON-конфигурацию. Диапазон ограничен пользо�
 ```bat
 python run_stable_audio_experiments.py --num-inference-steps 20 --gamma 50 --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\stable_audio_20step_gamma50
 ```
+
+Чтобы `gamma` не ослабевал с ростом длительности SFX, mean-loss gradient
+нормируется относительно 0,5 секунды latent-времени. Для файлов короче этого
+порога поведение не меняется; для более длинных коррекция усиливается
+пропорционально числу активных latent-позиций и всё равно ограничивается
+`max_relative_step`.
+
+Один конкретный case и seed можно безопасно выбрать без изменения JSON. Это
+нужно для изолированного smoke-test после алгоритмических изменений:
+
+```bat
+python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_duration_scaled_smoke
+```

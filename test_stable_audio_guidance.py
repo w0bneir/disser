@@ -14,6 +14,7 @@ from run_stable_audio_experiments import (
     PAIR_OUTPUT_FILES,
     load_reference_for_analysis,
     pair_is_complete,
+    resolve_experiment_selection,
     resolve_guidance_gamma,
     resolve_inference_steps,
 )
@@ -151,6 +152,38 @@ class StableAudioGuidanceTests(unittest.TestCase):
                     max_new_pairs=1,
                 )
 
+    def test_case_and_seed_selection_is_guarded(self) -> None:
+        cases = [{"id": "metal"}, {"id": "wood"}]
+        selected_cases, selected_seeds = resolve_experiment_selection(
+            configured_cases=cases,
+            configured_seeds=[17, 42],
+            requested_case_id="wood",
+            requested_seed=2026,
+            smoke_test=False,
+            max_new_pairs=1,
+        )
+        self.assertEqual(selected_cases, [{"id": "wood"}])
+        self.assertEqual(selected_seeds, [2026])
+
+        with self.assertRaisesRegex(ValueError, "--max-new-pairs 1"):
+            resolve_experiment_selection(
+                configured_cases=cases,
+                configured_seeds=[17, 42],
+                requested_case_id="wood",
+                requested_seed=None,
+                smoke_test=False,
+                max_new_pairs=None,
+            )
+        with self.assertRaisesRegex(ValueError, "Неизвестный --case-id"):
+            resolve_experiment_selection(
+                configured_cases=cases,
+                configured_seeds=[17, 42],
+                requested_case_id="glass",
+                requested_seed=None,
+                smoke_test=False,
+                max_new_pairs=1,
+            )
+
     def test_latent_envelope_shape_and_normalization(self) -> None:
         latents = torch.arange(2 * 4 * 8, dtype=torch.float32).reshape(2, 4, 8)
         envelope = latent_rms_envelope(latents, active_length=5)
@@ -224,6 +257,43 @@ class StableAudioGuidanceTests(unittest.TestCase):
         )
         self.assertTrue(torch.isfinite(corrected).all())
         self.assertLessEqual(diagnostics["relative_correction"], 0.030001)
+
+    def test_duration_scaling_keeps_relative_correction_comparable(self) -> None:
+        short_latents = torch.tensor([[[0.1, 0.5, 1.0], [0.1, 0.5, 1.0]]])
+        short_target = torch.tensor([1.0, 0.5, 0.0])
+        long_latents = short_latents.repeat(1, 1, 2)
+        long_target = short_target.repeat(2)
+
+        _, _, _, short_diagnostics = guide_latents(
+            short_latents,
+            torch.zeros_like(short_latents),
+            sigma=0.0,
+            target_envelope=short_target,
+            active_length=3,
+            gamma=0.01,
+            gradient_clip_norm=100.0,
+            max_relative_step=1.0,
+            reference_active_length=3,
+        )
+        _, _, _, long_diagnostics = guide_latents(
+            long_latents,
+            torch.zeros_like(long_latents),
+            sigma=0.0,
+            target_envelope=long_target,
+            active_length=6,
+            gamma=0.01,
+            gradient_clip_norm=100.0,
+            max_relative_step=1.0,
+            reference_active_length=3,
+        )
+
+        self.assertEqual(short_diagnostics["duration_scale"], 1.0)
+        self.assertEqual(long_diagnostics["duration_scale"], 2.0)
+        self.assertAlmostEqual(
+            short_diagnostics["relative_correction"],
+            long_diagnostics["relative_correction"],
+            places=6,
+        )
 
     def test_active_latent_length_uses_decoder_hop(self) -> None:
         self.assertEqual(active_latent_length(_PipeShape(), 0.47), 11)
