@@ -142,7 +142,11 @@ python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 
 ```
 
 Следующий этап не подключается к generation автоматически: сначала по
-нескольким независимым NPZ обучается малый waveform-aware probe. Разделение
+нескольким независимым NPZ обучается малый waveform-aware probe. Он использует
+знаковую ridge-проекцию latent-каналов: это учитывает, что VAE декодирует каналы
+с разными знаками, и остаётся полностью differentiable по входному latent.
+Ridge alpha выбирается leave-one-pair-out проверкой только внутри train-набора.
+Разделение
 train/validation выполняется по целым baseline/guided-парам, поэтому два почти
 одинаковых результата одного seed не могут попасть по разные стороны проверки.
 По умолчанию обучение CPU требует минимум шесть независимых 50-шаговых пар
@@ -157,3 +161,9 @@ python train_envelope_probe.py results\probe_dataset --output models\envelope_pr
 Вместе с весами сохраняется JSON-отчёт, где качество probe на отложенных парах
 сопоставлено с текущей latent-RMS огибающей. Подключать probe к guidance можно
 только после улучшения validation Pearson без ухудшения validation MSE.
+
+На наборе `2026-08-18_probe_dataset_50step_01` версия
+`signed_latent_ridge_v2` выбрала `alpha=1.0` внутренним leave-one-pair-out CV.
+На полностью отложенном seed 2026 для обоих case средний Pearson вырос с
+`0.6166` до `0.8238`, а MSE снизился с `0.0951` до `0.0360`. Контрольный барьер
+пройден; checkpoint сохранён как `models/envelope_probe.safetensors`.

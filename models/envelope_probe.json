@@ -1,0 +1,170 @@
+{
+  "format_version": 2,
+  "probe": {
+    "architecture": "signed_latent_ridge_v2",
+    "latent_channels": 64,
+    "ridge_alpha": 1.0
+  },
+  "training_arguments": {
+    "ridge_alphas": [
+      0.001,
+      0.01,
+      0.1,
+      1.0,
+      10.0,
+      100.0,
+      1000.0
+    ],
+    "validation_fraction": 0.33,
+    "seed": 2026
+  },
+  "diagnostic_files": [
+    "results\\2026-08-18_probe_dataset_50step_01\\metal_impact\\seed_17\\latent_diagnostics.npz",
+    "results\\2026-08-18_probe_dataset_50step_01\\metal_impact\\seed_2026\\latent_diagnostics.npz",
+    "results\\2026-08-18_probe_dataset_50step_01\\metal_impact\\seed_42\\latent_diagnostics.npz",
+    "results\\2026-08-18_probe_dataset_50step_01\\wood_creak\\seed_17\\latent_diagnostics.npz",
+    "results\\2026-08-18_probe_dataset_50step_01\\wood_creak\\seed_2026\\latent_diagnostics.npz",
+    "results\\2026-08-18_probe_dataset_50step_01\\wood_creak\\seed_42\\latent_diagnostics.npz"
+  ],
+  "group_count": 6,
+  "selected_alpha": 1.0,
+  "train_cross_validation": [
+    {
+      "alpha": 0.001,
+      "mean_pearson": 0.7826464176177979,
+      "mean_mse": 0.09212927549378946
+    },
+    {
+      "alpha": 0.01,
+      "mean_pearson": 0.8021346926689148,
+      "mean_mse": 0.08433769131079316
+    },
+    {
+      "alpha": 0.1,
+      "mean_pearson": 0.8528069108724594,
+      "mean_mse": 0.05524467374198139
+    },
+    {
+      "alpha": 1.0,
+      "mean_pearson": 0.8692857101559639,
+      "mean_mse": 0.038119016273412853
+    },
+    {
+      "alpha": 10.0,
+      "mean_pearson": 0.8220105990767479,
+      "mean_mse": 0.054355718195438385
+    },
+    {
+      "alpha": 100.0,
+      "mean_pearson": 0.7667545452713966,
+      "mean_mse": 0.07660251250490546
+    },
+    {
+      "alpha": 1000.0,
+      "mean_pearson": 0.7368826046586037,
+      "mean_mse": 0.0877459654584527
+    }
+  ],
+  "training": {
+    "sample_count": 8,
+    "probe_mse": 0.015741040569992037,
+    "probe_pearson": 0.9369448497891426,
+    "latent_rms_mse": 0.06870431615971029,
+    "latent_rms_pearson": 0.693071112036705,
+    "per_sample": [
+      {
+        "name": "metal_impact/seed_17/baseline",
+        "probe_mse": 0.0006571054691448808,
+        "probe_pearson": 0.9974515438079834,
+        "latent_rms_mse": 0.013993173837661743,
+        "latent_rms_pearson": 0.9581978917121887
+      },
+      {
+        "name": "metal_impact/seed_17/guided",
+        "probe_mse": 0.0004811426915694028,
+        "probe_pearson": 0.9971795678138733,
+        "latent_rms_mse": 0.05174980312585831,
+        "latent_rms_pearson": 0.8777737617492676
+      },
+      {
+        "name": "metal_impact/seed_42/baseline",
+        "probe_mse": 0.003535741474479437,
+        "probe_pearson": 0.9945710897445679,
+        "latent_rms_mse": 0.01255754567682743,
+        "latent_rms_pearson": 0.9649333953857422
+      },
+      {
+        "name": "metal_impact/seed_42/guided",
+        "probe_mse": 0.0027239748742431402,
+        "probe_pearson": 0.9959288239479065,
+        "latent_rms_mse": 0.017844203859567642,
+        "latent_rms_pearson": 0.9664466977119446
+      },
+      {
+        "name": "wood_creak/seed_17/baseline",
+        "probe_mse": 0.013857097364962101,
+        "probe_pearson": 0.8935791254043579,
+        "latent_rms_mse": 0.07503870129585266,
+        "latent_rms_pearson": 0.46705684065818787
+      },
+      {
+        "name": "wood_creak/seed_17/guided",
+        "probe_mse": 0.022682905197143555,
+        "probe_pearson": 0.8791621923446655,
+        "latent_rms_mse": 0.15106935799121857,
+        "latent_rms_pearson": 0.39357510209083557
+      },
+      {
+        "name": "wood_creak/seed_42/baseline",
+        "probe_mse": 0.03164304047822952,
+        "probe_pearson": 0.91083824634552,
+        "latent_rms_mse": 0.1510012000799179,
+        "latent_rms_pearson": 0.34608614444732666
+      },
+      {
+        "name": "wood_creak/seed_42/guided",
+        "probe_mse": 0.05034731701016426,
+        "probe_pearson": 0.8268482089042664,
+        "latent_rms_mse": 0.07638054341077805,
+        "latent_rms_pearson": 0.570499062538147
+      }
+    ]
+  },
+  "validation": {
+    "sample_count": 4,
+    "probe_mse": 0.03602626919746399,
+    "probe_pearson": 0.8237660080194473,
+    "latent_rms_mse": 0.09513536212034523,
+    "latent_rms_pearson": 0.6166474297642708,
+    "per_sample": [
+      {
+        "name": "metal_impact/seed_2026/baseline",
+        "probe_mse": 0.014442365616559982,
+        "probe_pearson": 0.9571057558059692,
+        "latent_rms_mse": 0.011557054705917835,
+        "latent_rms_pearson": 0.9587820768356323
+      },
+      {
+        "name": "metal_impact/seed_2026/guided",
+        "probe_mse": 0.020449340343475342,
+        "probe_pearson": 0.9447314143180847,
+        "latent_rms_mse": 0.10854413360357285,
+        "latent_rms_pearson": 0.7465200424194336
+      },
+      {
+        "name": "wood_creak/seed_2026/baseline",
+        "probe_mse": 0.05527099221944809,
+        "probe_pearson": 0.6770130395889282,
+        "latent_rms_mse": 0.17361241579055786,
+        "latent_rms_pearson": 0.21028992533683777
+      },
+      {
+        "name": "wood_creak/seed_2026/guided",
+        "probe_mse": 0.05394237861037254,
+        "probe_pearson": 0.7162138223648071,
+        "latent_rms_mse": 0.0868278443813324,
+        "latent_rms_pearson": 0.5509976744651794
+      }
+    ]
+  }
+}
