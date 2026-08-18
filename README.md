@@ -140,3 +140,20 @@ target/latent/waveform-огибающими. NPZ содержит только �
 ```bat
 python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_latent_diagnostics_smoke
 ```
+
+Следующий этап не подключается к generation автоматически: сначала по
+нескольким независимым NPZ обучается малый waveform-aware probe. Разделение
+train/validation выполняется по целым baseline/guided-парам, поэтому два почти
+одинаковых результата одного seed не могут попасть по разные стороны проверки.
+По умолчанию обучение CPU требует минимум шесть независимых 50-шаговых пар
+(текущий набор: два case × три seed). Smoke-результаты в обучающий набор не
+включаются, потому что распределение финальных latents после 4 и 50 шагов
+различается:
+
+```bat
+python train_envelope_probe.py results\probe_dataset --output models\envelope_probe.safetensors
+```
+
+Вместе с весами сохраняется JSON-отчёт, где качество probe на отложенных парах
+сопоставлено с текущей latent-RMS огибающей. Подключать probe к guidance можно
+только после улучшения validation Pearson без ухудшения validation MSE.
