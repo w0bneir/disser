@@ -1,12 +1,12 @@
 import sys
 import torch
-import librosa
+import soundfile
 import torchaudio
 import diffusers
 
 def run_diagnostics():
     print("=" * 60)
-    print(" ДИАГНОСТИКА ОКРУЖЕНИЯ MINICONDA (sfx_gen) ")
+    print(" ДИАГНОСТИКА ОКРУЖЕНИЯ SFX DIRECT LATENT GUIDANCE ")
     print("=" * 60)
     
     print(f"[+] Версия Python: {sys.version.split()[0]}")
@@ -23,7 +23,7 @@ def run_diagnostics():
     else:
         print("[!] ВНИМАНИЕ: CUDA не обнаружена.")
 
-    print(f"[+] Версия Librosa: {librosa.__version__}")
+    print(f"[+] Версия SoundFile: {soundfile.__version__}")
     print(f"[+] Версия TorchAudio: {torchaudio.__version__}")
     print(f"[+] Версия Diffusers: {diffusers.__version__}")
     print("=" * 60)

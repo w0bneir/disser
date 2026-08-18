@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 
 import torch
 
-from run_stable_audio_experiments import resolve_inference_steps
+from analyzer import load_audio
+from run_stable_audio_experiments import PAIR_OUTPUT_FILES, pair_is_complete, resolve_inference_steps
 from stable_audio_guidance import (
     _x0_from_v_prediction,
     active_latent_length,
@@ -45,6 +48,24 @@ class _CfgPipe:
 
 
 class StableAudioGuidanceTests(unittest.TestCase):
+    def test_resume_requires_complete_pair_artifacts(self) -> None:
+        with TemporaryDirectory() as directory:
+            run_dir = Path(directory)
+            (run_dir / "baseline.wav").touch()
+            (run_dir / "guided.wav").touch()
+            self.assertFalse(pair_is_complete(run_dir))
+            for name in PAIR_OUTPUT_FILES:
+                (run_dir / name).touch()
+            self.assertTrue(pair_is_complete(run_dir))
+
+    def test_reference_wav_loads_as_16khz_mono_without_librosa(self) -> None:
+        reference = Path(__file__).parent / "references" / "metal_impact.wav"
+        waveform, sample_rate = load_audio(reference)
+        self.assertEqual(sample_rate, 16_000)
+        self.assertEqual(waveform.ndim, 1)
+        self.assertGreater(waveform.numel(), 0)
+        self.assertTrue(torch.isfinite(waveform).all())
+
     def test_smoke_test_always_uses_four_steps(self) -> None:
         self.assertEqual(
             resolve_inference_steps(

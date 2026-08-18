@@ -10,6 +10,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+import matplotlib
+
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -42,6 +45,15 @@ METRIC_COLUMNS = [
     "peak_vram_mb",
     "duration_seconds",
 ]
+
+PAIR_OUTPUT_FILES = (
+    "baseline.wav",
+    "guided.wav",
+    "metadata.json",
+    "envelope_comparison.png",
+    "guidance_trace.csv",
+    "guidance_diagnostics.png",
+)
 
 
 def read_config(path: Path) -> dict[str, Any]:
@@ -96,6 +108,11 @@ def resolve_inference_steps(
             "чтобы не запускать несколько GPU-пар подряд"
         )
     return requested_steps
+
+
+def pair_is_complete(run_dir: Path) -> bool:
+    """Считать пару готовой только при наличии всех обязательных артефактов."""
+    return all((run_dir / name).is_file() for name in PAIR_OUTPUT_FILES)
 
 
 def release_gpu() -> None:
@@ -312,9 +329,11 @@ def run(
             run_dir = results_dir / case["id"] / f"seed_{seed}"
             baseline_path = run_dir / "baseline.wav"
             guided_path = run_dir / "guided.wav"
-            if resume and baseline_path.is_file() and guided_path.is_file():
+            if resume and pair_is_complete(run_dir):
                 print(f"    seed={seed}: уже готово (--resume).")
                 continue
+            if resume and run_dir.exists():
+                print(f"    seed={seed}: найдены неполные артефакты; пара будет пересоздана.")
 
             print(f"    seed={seed}: baseline и guidance ({steps} шаг.)...")
             initial_latents = prepare_initial_latents(pipe, seed=int(seed), device=device)

@@ -11,10 +11,18 @@ import torch.nn.functional as F
 
 def load_audio(file_path: str | Path, target_sr: int = 16000) -> tuple[torch.Tensor, int]:
     """Загрузить WAV, привести его к mono и указанной частоте дискретизации."""
-    import librosa
+    import soundfile as sf
+    import torchaudio.functional as AF
 
-    samples, sample_rate = librosa.load(str(file_path), sr=target_sr, mono=True)
-    return torch.tensor(samples, dtype=torch.float32), sample_rate
+    if target_sr <= 0:
+        raise ValueError("target_sr должен быть положительным")
+    samples, sample_rate = sf.read(str(file_path), dtype="float32", always_2d=True)
+    if samples.shape[0] == 0:
+        raise ValueError(f"Аудиофайл пуст: {file_path}")
+    waveform = torch.from_numpy(samples).mean(dim=1)
+    if sample_rate != target_sr:
+        waveform = AF.resample(waveform, sample_rate, target_sr)
+    return waveform.contiguous(), target_sr
 
 
 def normalize_01(values: torch.Tensor, *, eps: float = 1e-8) -> torch.Tensor:
@@ -60,6 +68,9 @@ def plot_and_save(
     output_image: str | Path = "envelope_result.png",
 ) -> None:
     """Сохранить график исходного сигнала и его RMS-огибающей."""
+    import matplotlib
+
+    matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     samples_cpu = samples.detach().cpu().numpy()
