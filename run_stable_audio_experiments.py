@@ -211,12 +211,16 @@ def validate_probe_guidance_mode(
     final_guidance_steps: int,
     envelope_probe_path: Path | None,
 ) -> None:
-    if probe_guidance_mode not in {"denoising", "final"}:
+    if probe_guidance_mode not in {"denoising", "final", "decoder"}:
         raise ValueError("Неизвестный probe guidance mode")
     if not 1 <= final_guidance_steps <= 100:
         raise ValueError("--final-guidance-steps должен быть в диапазоне [1, 100]")
-    if probe_guidance_mode == "final" and envelope_probe_path is None:
-        raise ValueError("--probe-guidance-mode final требует --envelope-probe")
+    if probe_guidance_mode in {"final", "decoder"} and envelope_probe_path is None:
+        raise ValueError(
+            f"--probe-guidance-mode {probe_guidance_mode} требует --envelope-probe"
+        )
+    if probe_guidance_mode == "decoder" and final_guidance_steps != 1:
+        raise ValueError("Экспериментальный decoder mode требует --final-guidance-steps 1")
 
 
 def load_reference_for_analysis(
@@ -587,6 +591,9 @@ def run(
     guidance_envelope_mode = "latent_rms"
     if envelope_probe is not None:
         guidance_envelope_mode = f"waveform_probe_{probe_guidance_mode}"
+    guidance_loss_mode = (
+        "decoder_waveform" if probe_guidance_mode == "decoder" else guidance_envelope_mode
+    )
     analysis_sample_rate = int(pipe.vae.config.sampling_rate)
     print(f"[+] Параметры guidance: gamma={guidance_gamma:g}")
     completed_pairs = 0
@@ -795,7 +802,7 @@ def run(
                 first_loss = float(guided.guidance_trace[0]["loss_before"])
                 final_loss = float(guided.guidance_trace[-1]["loss_after"])
                 print(
-                    f"      guidance loss ({guidance_envelope_mode}): "
+                    f"      guidance loss ({guidance_loss_mode}): "
                     f"{first_loss:.4f} -> {final_loss:.4f}"
                 )
             del baseline, guided, initial_latents
@@ -867,11 +874,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--probe-guidance-mode",
-        choices=("denoising", "final"),
+        choices=("denoising", "final", "decoder"),
         default="denoising",
         help=(
             "denoising применяет probe на каждом шаге; final выполняет "
-            "projected final-latent guidance с суммарным trust region."
+            "projected probe-guidance; decoder — один точный VAE-aware шаг."
         ),
     )
     parser.add_argument(

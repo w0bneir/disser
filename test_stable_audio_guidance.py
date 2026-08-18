@@ -30,11 +30,13 @@ from stable_audio_guidance import (
     active_latent_length,
     envelope_metrics,
     guide_final_latents,
+    guide_final_latents_with_decoder,
     guide_latents,
     latent_rms_envelope,
     predict_guidance_envelope,
     resample_target_envelope,
     predict_noise_sequential_cfg,
+    waveform_rms_envelope,
 )
 
 
@@ -81,6 +83,12 @@ class StableAudioGuidanceTests(unittest.TestCase):
                 probe_guidance_mode="denoising",
                 final_guidance_steps=0,
                 envelope_probe_path=None,
+            )
+        with self.assertRaisesRegex(ValueError, "требует --final-guidance-steps 1"):
+            validate_probe_guidance_mode(
+                probe_guidance_mode="decoder",
+                final_guidance_steps=2,
+                envelope_probe_path=Path("probe.safetensors"),
             )
 
     def test_envelope_probe_request_is_guarded(self) -> None:
@@ -404,6 +412,43 @@ class StableAudioGuidanceTests(unittest.TestCase):
         self.assertTrue(
             all(float(row["max_frame_relative_correction"]) <= 0.030001 for row in trace)
         )
+
+    def test_decoder_guidance_uses_exact_waveform_loss_inside_trust_region(self) -> None:
+        latents = torch.tensor(
+            [[[0.1, 0.5, 1.0, 0.7, 0.2], [0.3, 0.2, 0.1, 0.4, 0.6]]]
+        )
+        target = torch.tensor([1.0, 0.5, 0.0])
+
+        def decode(values: torch.Tensor) -> torch.Tensor:
+            return values[:, :1].repeat_interleave(1024, dim=-1)
+
+        before = waveform_rms_envelope(decode(latents[:, :, :3]))[0]
+        target_resampled = resample_target_envelope(target, before.numel())
+        corrected, final_loss, trace = guide_final_latents_with_decoder(
+            latents,
+            decode_fn=decode,
+            target_envelope=target,
+            active_length=3,
+            waveform_length=3072,
+            gamma=1000.0,
+            gradient_clip_norm=1000.0,
+            max_relative_step=0.03,
+            steps=1,
+            decoder_context_frames=0,
+            reference_active_length=3,
+        )
+        after = waveform_rms_envelope(decode(corrected[:, :, :3]))[0]
+        self.assertLess(
+            envelope_metrics(target_resampled, after)["mse"],
+            envelope_metrics(target_resampled, before)["mse"],
+        )
+        self.assertAlmostEqual(final_loss, trace[-1]["loss_after"])
+        delta = corrected[:, :, :3] - latents[:, :, :3]
+        frame_relative = torch.linalg.vector_norm(delta, dim=1) / torch.linalg.vector_norm(
+            latents[:, :, :3], dim=1
+        )
+        self.assertLessEqual(float(frame_relative.max()), 0.030001)
+        self.assertTrue(torch.equal(corrected[:, :, 3:], latents[:, :, 3:]))
 
     def test_fp16_early_sigma_stays_finite(self) -> None:
         latents = torch.zeros((1, 64, 11), dtype=torch.float16)

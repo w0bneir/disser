@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import ceil
 from time import perf_counter
-from typing import Any
+from typing import Any, Callable
 
 import numpy as np
 import torch
@@ -77,6 +77,27 @@ def predict_guidance_envelope(
     if not torch.isfinite(envelope).all():
         raise FloatingPointError("Guidance envelope содержит NaN/Inf")
     return envelope
+
+
+def waveform_rms_envelope(
+    waveform: torch.Tensor,
+    *,
+    frame_length: int = 2048,
+    hop_length: int = 512,
+) -> torch.Tensor:
+    """Differentiable RMS-огибающая waveform [batch, channels, samples]."""
+    if waveform.ndim != 3:
+        raise ValueError("Waveform должна иметь форму [batch, channels, samples]")
+    if waveform.shape[-1] == 0:
+        raise ValueError("Waveform не должна быть пустой")
+    if frame_length <= 0 or hop_length <= 0:
+        raise ValueError("frame_length и hop_length должны быть положительными")
+    mono = waveform.float().mean(dim=1)
+    if mono.shape[-1] < frame_length:
+        mono = F.pad(mono, (0, frame_length - mono.shape[-1]))
+    frames = mono.unfold(-1, frame_length, hop_length)
+    rms = torch.sqrt(frames.square().mean(dim=-1) + 1e-8)
+    return normalize_per_sample(rms)
 
 
 def resample_target_envelope(target: torch.Tensor, target_length: int) -> torch.Tensor:
@@ -360,6 +381,122 @@ def guide_final_latents(
     return corrected, last_loss, trace
 
 
+def guide_final_latents_with_decoder(
+    latents: torch.Tensor,
+    *,
+    decode_fn: Callable[[torch.Tensor], torch.Tensor],
+    target_envelope: torch.Tensor,
+    active_length: int,
+    waveform_length: int,
+    gamma: float,
+    gradient_clip_norm: float,
+    max_relative_step: float,
+    steps: int,
+    decoder_context_frames: int = 64,
+    reference_active_length: int | None = None,
+) -> tuple[torch.Tensor, float, list[dict[str, float | int]]]:
+    """Один или несколько точных final-latent шагов через короткий VAE decode."""
+    if gamma <= 0:
+        raise ValueError("Decoder guidance требует gamma > 0")
+    if steps <= 0:
+        raise ValueError("Число decoder guidance шагов должно быть положительным")
+    if waveform_length <= 0:
+        raise ValueError("waveform_length должен быть положительным")
+    if decoder_context_frames < 0:
+        raise ValueError("decoder_context_frames не может быть отрицательным")
+    if not 1 <= active_length <= latents.shape[-1]:
+        raise ValueError("Некорректный active_length")
+    if not 0 < max_relative_step <= 1:
+        raise ValueError("max_relative_step должен быть в диапазоне (0, 1]")
+    if reference_active_length is None:
+        reference_active_length = active_length
+    if reference_active_length <= 0:
+        raise ValueError("reference_active_length должен быть положительным")
+
+    context_length = min(latents.shape[-1], active_length + decoder_context_frames)
+    anchor = latents.detach().float()
+    anchor_active = anchor[:, :, :active_length]
+    context_tail = latents.detach()[:, :, active_length:context_length]
+    working_active = anchor_active.clone()
+    active_latent_norm = torch.linalg.vector_norm(anchor_active).clamp_min(1e-8)
+    anchor_frame_norm = torch.linalg.vector_norm(anchor_active, dim=1)
+    duration_scale = max(1.0, active_length / reference_active_length)
+    trace: list[dict[str, float | int]] = []
+    last_loss = float("nan")
+
+    def decode_envelope(active: torch.Tensor) -> torch.Tensor:
+        decoder_input = torch.cat(
+            [active.to(dtype=latents.dtype), context_tail],
+            dim=-1,
+        )
+        waveform = decode_fn(decoder_input)
+        if waveform.ndim != 3 or waveform.shape[-1] < waveform_length:
+            raise ValueError("VAE decoder вернул слишком короткую waveform")
+        return waveform_rms_envelope(waveform[:, :, :waveform_length])
+
+    for index in range(steps):
+        candidate_input = working_active.detach().to(dtype=latents.dtype).requires_grad_(True)
+        envelope = decode_envelope(candidate_input)
+        target = resample_target_envelope(
+            target_envelope.to(latents.device, torch.float32), envelope.shape[-1]
+        )
+        loss = F.mse_loss(envelope, target.unsqueeze(0).expand_as(envelope))
+        gradient = torch.autograd.grad(loss, candidate_input, only_inputs=True)[0].float()
+        raw_gradient_norm = torch.linalg.vector_norm(gradient)
+        gradient = _clip_gradient_norm(gradient, gradient_clip_norm)
+        proposed_active = working_active - gamma * duration_scale * gradient
+
+        proposed_delta = proposed_active.detach() - anchor_active
+        proposed_frame_norm = torch.linalg.vector_norm(proposed_delta, dim=1)
+        maximum_frame_norm = max_relative_step * anchor_frame_norm
+        frame_scale = torch.clamp(
+            maximum_frame_norm / proposed_frame_norm.clamp_min(1e-8),
+            max=1.0,
+        )
+        projected_delta = proposed_delta * frame_scale.unsqueeze(1)
+        candidate_active = anchor_active + projected_delta
+        with torch.no_grad():
+            corrected_envelope = decode_envelope(candidate_active)
+            loss_after = F.mse_loss(
+                corrected_envelope,
+                target.unsqueeze(0).expand_as(corrected_envelope),
+            )
+        if loss_after > loss:
+            break
+        working_active = candidate_active
+        correction_norm = torch.linalg.vector_norm(projected_delta)
+        frame_relative = torch.linalg.vector_norm(projected_delta, dim=1) / anchor_frame_norm.clamp_min(
+            1e-8
+        )
+        last_loss = float(loss_after.detach().cpu())
+        trace.append(
+            {
+                "step": index,
+                "sigma": 0.0,
+                "loss_before": float(loss.detach().cpu()),
+                "gradient_norm": float(raw_gradient_norm.detach().cpu()),
+                "correction_norm": float(correction_norm.detach().cpu()),
+                "active_latent_norm": float(active_latent_norm.detach().cpu()),
+                "relative_correction": float(
+                    (correction_norm / active_latent_norm).detach().cpu()
+                ),
+                "max_frame_relative_correction": float(frame_relative.max().detach().cpu()),
+                "decoder_context_frames": context_length - active_length,
+                "duration_scale": duration_scale,
+                "loss_after": last_loss,
+            }
+        )
+
+    if not trace:
+        raise RuntimeError("Decoder guidance не смог уменьшить waveform loss внутри trust region")
+    corrected = anchor.clone()
+    corrected[:, :, :active_length] = working_active
+    corrected = corrected.to(dtype=latents.dtype)
+    if not torch.isfinite(corrected).all():
+        raise FloatingPointError("Decoder guidance создал NaN/Inf")
+    return corrected, last_loss, trace
+
+
 def _prepare_conditions(
     pipe: Any,
     *,
@@ -484,8 +621,8 @@ def generate_sfx(
         raise ValueError("Длительность и число шагов должны быть положительными")
     if guidance_reference_duration_seconds <= 0:
         raise ValueError("guidance_reference_duration_seconds должен быть положительным")
-    if guidance_mode not in {"denoising", "final"}:
-        raise ValueError("guidance_mode должен быть 'denoising' или 'final'")
+    if guidance_mode not in {"denoising", "final", "decoder"}:
+        raise ValueError("guidance_mode должен быть 'denoising', 'final' или 'decoder'")
     if gamma > 0 and guidance_mode == "final" and envelope_probe is None:
         raise ValueError("Final guidance требует waveform-aware envelope probe")
     if final_guidance_steps <= 0:
@@ -497,6 +634,7 @@ def generate_sfx(
         raise ValueError("Демонстратор поддерживает batch_size=1")
     active_length = active_latent_length(pipe, duration_seconds)
     reference_active_length = active_latent_length(pipe, guidance_reference_duration_seconds)
+    waveform_length = int(duration_seconds * int(pipe.vae.config.sampling_rate))
     pipe.scheduler.set_timesteps(num_inference_steps, device=device)
     timesteps = pipe.scheduler.timesteps
     text_duration, global_duration, do_cfg = _prepare_conditions(
@@ -587,12 +725,25 @@ def generate_sfx(
             steps=final_guidance_steps,
             reference_active_length=reference_active_length,
         )
+    elif gamma > 0 and guidance_mode == "decoder":
+        pipe.vae.requires_grad_(False)
+        latents, last_loss, guidance_trace = guide_final_latents_with_decoder(
+            latents,
+            decode_fn=lambda values: pipe.vae.decode(values).sample,
+            target_envelope=target_envelope,
+            active_length=active_length,
+            waveform_length=waveform_length,
+            gamma=gamma,
+            gradient_clip_norm=gradient_clip_norm,
+            max_relative_step=max_relative_step,
+            steps=final_guidance_steps,
+            reference_active_length=reference_active_length,
+        )
 
     with torch.no_grad():
         waveform = pipe.vae.decode(latents).sample
     if not torch.isfinite(waveform).all():
         raise FloatingPointError("VAE вернул NaN/Inf; запись WAV отменена")
-    waveform_length = int(duration_seconds * int(pipe.vae.config.sampling_rate))
     waveform = waveform[:, :, :waveform_length]
     final_envelope = latent_rms_envelope(latents, active_length=active_length)[0].detach().cpu()
     with torch.no_grad():
