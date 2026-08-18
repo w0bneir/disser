@@ -10,7 +10,12 @@ from types import SimpleNamespace
 import torch
 
 from analyzer import load_audio
-from run_stable_audio_experiments import PAIR_OUTPUT_FILES, pair_is_complete, resolve_inference_steps
+from run_stable_audio_experiments import (
+    PAIR_OUTPUT_FILES,
+    load_reference_for_analysis,
+    pair_is_complete,
+    resolve_inference_steps,
+)
 from stable_audio_guidance import (
     _x0_from_v_prediction,
     active_latent_length,
@@ -65,6 +70,18 @@ class StableAudioGuidanceTests(unittest.TestCase):
         self.assertEqual(waveform.ndim, 1)
         self.assertGreater(waveform.numel(), 0)
         self.assertTrue(torch.isfinite(waveform).all())
+
+    def test_reference_analysis_uses_model_sample_rate(self) -> None:
+        reference = Path(__file__).parent / "references" / "metal_impact.wav"
+        waveform, sample_rate, envelope = load_reference_for_analysis(
+            reference,
+            analysis_sample_rate=44_100,
+        )
+        self.assertEqual(sample_rate, 44_100)
+        expected_points = 1 + (waveform.numel() - 2048) // 512
+        self.assertEqual(envelope.numel(), expected_points)
+        self.assertEqual(envelope.numel(), 37)
+        self.assertTrue(torch.isfinite(envelope).all())
 
     def test_smoke_test_always_uses_four_steps(self) -> None:
         self.assertEqual(

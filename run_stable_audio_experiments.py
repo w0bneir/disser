@@ -115,6 +115,26 @@ def pair_is_complete(run_dir: Path) -> bool:
     return all((run_dir / name).is_file() for name in PAIR_OUTPUT_FILES)
 
 
+def load_reference_for_analysis(
+    path: str | Path,
+    *,
+    analysis_sample_rate: int,
+) -> tuple[torch.Tensor, int, torch.Tensor]:
+    """Загрузить референс на той же частоте, на которой оценивается результат.
+
+    ``extract_rms_envelope`` принимает размеры окна и шага в отсчётах. Поэтому
+    две записи с разными sample rate получили бы разные физические размеры RMS-
+    окна и несопоставимые метрики, даже при одинаковой форме сигнала.
+    """
+    waveform, sample_rate = load_audio(path, target_sr=analysis_sample_rate)
+    if sample_rate != analysis_sample_rate:
+        raise RuntimeError(
+            "Частота анализа референса не совпала с частотой модели: "
+            f"{sample_rate} != {analysis_sample_rate}"
+        )
+    return waveform, sample_rate, extract_rms_envelope(waveform).cpu()
+
+
 def release_gpu() -> None:
     gc.collect()
     if torch.cuda.is_available():
@@ -317,13 +337,19 @@ def run(
     pipe = load_stable_audio(config.get("model_id", DEFAULT_MODEL_ID), local_files_only=not allow_download)
     print("[+] Pipeline готов; подготавливаются референс и начальный latent.")
     device = torch.device("cuda")
+    analysis_sample_rate = int(pipe.vae.config.sampling_rate)
     completed_pairs = 0
 
     for case in cases:
-        waveform, reference_sample_rate = load_audio(case["reference_path"])
+        waveform, reference_sample_rate, target = load_reference_for_analysis(
+            case["reference_path"],
+            analysis_sample_rate=analysis_sample_rate,
+        )
         duration_seconds = waveform.numel() / reference_sample_rate
-        target = extract_rms_envelope(waveform).cpu()
-        print(f"[+] {case['id']}: {duration_seconds:.2f} с, {target.numel()} точек E_target")
+        print(
+            f"[+] {case['id']}: {duration_seconds:.2f} с, "
+            f"{target.numel()} точек E_target при {reference_sample_rate} Гц"
+        )
 
         for seed in seeds:
             run_dir = results_dir / case["id"] / f"seed_{seed}"
@@ -394,6 +420,9 @@ def run(
                 "prompt": case["prompt"],
                 "seed": int(seed),
                 "duration_seconds": duration_seconds,
+                "analysis_sample_rate": reference_sample_rate,
+                "reference_envelope_points": int(target.numel()),
+                "generated_envelope_points": int(guided_envelope.numel()),
                 "num_inference_steps": steps,
                 "cfg_scale": float(config["cfg_scale"]),
                 "gamma": float(config["gamma"]),
