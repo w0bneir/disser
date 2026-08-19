@@ -29,6 +29,7 @@ from stable_audio_guidance import (
     _x0_from_v_prediction,
     active_latent_length,
     envelope_metrics,
+    envelope_shape_loss,
     guide_denoising_latents_with_decoder,
     guide_final_latents,
     guide_final_latents_with_decoder,
@@ -96,6 +97,7 @@ class StableAudioGuidanceTests(unittest.TestCase):
             final_guidance_steps=3,
             envelope_probe_path=Path("probe.safetensors"),
             decoder_guidance_start_fraction=0.7,
+            decoder_correlation_weight=0.1,
         )
         with self.assertRaisesRegex(ValueError, "диапазоне"):
             validate_probe_guidance_mode(
@@ -109,6 +111,14 @@ class StableAudioGuidanceTests(unittest.TestCase):
                 final_guidance_steps=3,
                 envelope_probe_path=Path("probe.safetensors"),
                 decoder_guidance_start_fraction=0.49,
+            )
+        with self.assertRaisesRegex(ValueError, "диапазоне"):
+            validate_probe_guidance_mode(
+                probe_guidance_mode="decoder_denoising",
+                final_guidance_steps=3,
+                envelope_probe_path=Path("probe.safetensors"),
+                decoder_guidance_start_fraction=0.7,
+                decoder_correlation_weight=1.1,
             )
 
     def test_envelope_probe_request_is_guarded(self) -> None:
@@ -494,12 +504,24 @@ class StableAudioGuidanceTests(unittest.TestCase):
             [49],
         )
 
+    def test_envelope_shape_loss_combines_mse_and_pearson(self) -> None:
+        generated = torch.tensor([[0.0, 1.0, 0.2]], requires_grad=True)
+        target = torch.tensor([1.0, 0.2, 0.0])
+        loss, mse, pearson = envelope_shape_loss(
+            generated,
+            target,
+            correlation_weight=0.1,
+        )
+        self.assertAlmostEqual(float(loss), float(mse + 0.1 * (1.0 - pearson)))
+        loss.backward()
+        self.assertTrue(torch.isfinite(generated.grad).all())
+
     def test_decoder_denoising_guidance_reduces_exact_x0_waveform_loss(self) -> None:
         latents = torch.tensor(
             [[[0.1, 0.5, 1.0, 0.7, 0.2], [0.3, 0.2, 0.1, 0.4, 0.6]]]
         )
         model_output = torch.zeros_like(latents)
-        target = torch.tensor([1.0, 0.5, 0.0])
+        target = torch.tensor([0.2, 1.0, 0.4])
 
         def decode(values: torch.Tensor) -> torch.Tensor:
             return values[:, :1].repeat_interleave(1024, dim=-1)
@@ -527,6 +549,7 @@ class StableAudioGuidanceTests(unittest.TestCase):
             max_relative_step=0.03,
             decoder_context_frames=0,
             reference_active_length=3,
+            correlation_weight=0.1,
         )
         after_x0 = _x0_from_v_prediction(
             corrected,
@@ -538,8 +561,21 @@ class StableAudioGuidanceTests(unittest.TestCase):
         after = waveform_rms_envelope(decode(after_x0[:, :, :3]))[0]
         after_mse = envelope_metrics(target_resampled, after)["mse"]
         self.assertLess(after_mse, envelope_metrics(target_resampled, before)["mse"])
-        self.assertAlmostEqual(loss_before, envelope_metrics(target_resampled, before)["mse"])
-        self.assertAlmostEqual(float(diagnostics["loss_after"]), after_mse)
+        before_metrics = envelope_metrics(target_resampled, before)
+        expected_before_loss = before_metrics["mse"] + 0.1 * (
+            1.0 - before_metrics["pearson_correlation"]
+        )
+        expected_after_loss = after_mse + 0.1 * (
+            1.0 - envelope_metrics(target_resampled, after)["pearson_correlation"]
+        )
+        self.assertAlmostEqual(loss_before, expected_before_loss)
+        self.assertAlmostEqual(float(diagnostics["loss_after"]), expected_after_loss)
+        self.assertAlmostEqual(float(diagnostics["mse_before"]), before_metrics["mse"])
+        self.assertAlmostEqual(float(diagnostics["mse_after"]), after_mse)
+        self.assertGreater(
+            float(diagnostics["pearson_after"]),
+            float(diagnostics["pearson_before"]),
+        )
         self.assertEqual(diagnostics["accepted"], 1)
         self.assertLessEqual(float(diagnostics["max_frame_relative_correction"]), 0.030001)
         self.assertTrue(torch.equal(corrected[:, :, 3:], latents[:, :, 3:]))

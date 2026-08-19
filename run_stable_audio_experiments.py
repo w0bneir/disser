@@ -211,6 +211,7 @@ def validate_probe_guidance_mode(
     final_guidance_steps: int,
     envelope_probe_path: Path | None,
     decoder_guidance_start_fraction: float = 0.7,
+    decoder_correlation_weight: float = 0.1,
 ) -> None:
     valid_modes = {"denoising", "final", "decoder", "decoder_denoising"}
     if probe_guidance_mode not in valid_modes:
@@ -235,6 +236,8 @@ def validate_probe_guidance_mode(
         raise ValueError(
             "--decoder-guidance-start-fraction должен быть в диапазоне [0.5, 1)"
         )
+    if not 0 <= decoder_correlation_weight <= 1:
+        raise ValueError("--decoder-correlation-weight должен быть в диапазоне [0, 1]")
 
 
 def load_reference_for_analysis(
@@ -528,6 +531,7 @@ def run(
     probe_guidance_mode: str,
     final_guidance_steps: int,
     decoder_guidance_start_fraction: float,
+    decoder_correlation_weight: float,
     minimum_vram_gb: float,
     minimum_free_vram_gb: float,
     allow_unsafe_vram: bool,
@@ -548,6 +552,7 @@ def run(
         final_guidance_steps=final_guidance_steps,
         envelope_probe_path=envelope_probe_path,
         decoder_guidance_start_fraction=decoder_guidance_start_fraction,
+        decoder_correlation_weight=decoder_correlation_weight,
     )
     envelope_probe = None
     if envelope_probe_path is not None:
@@ -607,11 +612,12 @@ def run(
     guidance_envelope_mode = "latent_rms"
     if envelope_probe is not None:
         guidance_envelope_mode = f"waveform_probe_{probe_guidance_mode}"
-    guidance_loss_mode = (
-        "decoder_waveform"
-        if probe_guidance_mode in {"decoder", "decoder_denoising"}
-        else guidance_envelope_mode
-    )
+    if probe_guidance_mode == "decoder_denoising" and decoder_correlation_weight > 0:
+        guidance_loss_mode = "decoder_waveform_mse_pearson"
+    elif probe_guidance_mode in {"decoder", "decoder_denoising"}:
+        guidance_loss_mode = "decoder_waveform"
+    else:
+        guidance_loss_mode = guidance_envelope_mode
     analysis_sample_rate = int(pipe.vae.config.sampling_rate)
     print(f"[+] Параметры guidance: gamma={guidance_gamma:g}")
     completed_pairs = 0
@@ -656,6 +662,7 @@ def run(
                 guidance_mode=probe_guidance_mode,
                 final_guidance_steps=final_guidance_steps,
                 decoder_guidance_start_fraction=decoder_guidance_start_fraction,
+                decoder_correlation_weight=decoder_correlation_weight,
                 return_active_latents=export_latent_diagnostics,
             )
             run_dir.mkdir(parents=True, exist_ok=True)
@@ -682,6 +689,7 @@ def run(
                 guidance_mode=probe_guidance_mode,
                 final_guidance_steps=final_guidance_steps,
                 decoder_guidance_start_fraction=decoder_guidance_start_fraction,
+                decoder_correlation_weight=decoder_correlation_weight,
                 return_active_latents=export_latent_diagnostics,
             )
             save_wav(guided_path, guided.audio, guided.sample_rate)
@@ -768,6 +776,7 @@ def run(
                 "probe_guidance_mode": probe_guidance_mode,
                 "final_guidance_steps": final_guidance_steps,
                 "decoder_guidance_start_fraction": decoder_guidance_start_fraction,
+                "decoder_correlation_weight": decoder_correlation_weight,
                 "guidance_reference_duration_seconds": float(
                     config["guidance_reference_duration_seconds"]
                 ),
@@ -922,6 +931,15 @@ def parse_args() -> argparse.Namespace:
             "по умолчанию последние 30%% траектории."
         ),
     )
+    parser.add_argument(
+        "--decoder-correlation-weight",
+        type=float,
+        default=0.1,
+        help=(
+            "Вес дифференцируемого штрафа 1-Pearson в decoder_denoising "
+            "в диапазоне [0, 1]."
+        ),
+    )
     parser.add_argument("--minimum-vram-gb", type=float, default=MINIMUM_GUIDANCE_VRAM_GB)
     parser.add_argument("--minimum-free-vram-gb", type=float, default=MINIMUM_GUIDANCE_FREE_VRAM_GB)
     parser.add_argument(
@@ -953,6 +971,7 @@ if __name__ == "__main__":
             probe_guidance_mode=arguments.probe_guidance_mode,
             final_guidance_steps=arguments.final_guidance_steps,
             decoder_guidance_start_fraction=arguments.decoder_guidance_start_fraction,
+            decoder_correlation_weight=arguments.decoder_correlation_weight,
             minimum_vram_gb=arguments.minimum_vram_gb,
             minimum_free_vram_gb=arguments.minimum_free_vram_gb,
             allow_unsafe_vram=arguments.allow_unsafe_vram,

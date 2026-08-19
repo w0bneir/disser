@@ -129,6 +129,37 @@ def envelope_metrics(target: torch.Tensor, generated: torch.Tensor) -> dict[str,
     return {"mse": float(mse), "pearson_correlation": float(correlation)}
 
 
+def envelope_shape_loss(
+    generated: torch.Tensor,
+    target: torch.Tensor,
+    *,
+    correlation_weight: float,
+    eps: float = 1e-6,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Дифференцируемая MSE + Pearson-цель для batch waveform-огибающих."""
+    if generated.ndim != 2:
+        raise ValueError("Generated envelope должна иметь форму [batch, time]")
+    if target.ndim != 1 or target.numel() != generated.shape[-1]:
+        raise ValueError("Target envelope должна совпадать с временной длиной generated")
+    if correlation_weight < 0:
+        raise ValueError("correlation_weight не может быть отрицательным")
+    if eps <= 0:
+        raise ValueError("eps должен быть положительным")
+
+    target_batch = target.unsqueeze(0).expand_as(generated)
+    mse = F.mse_loss(generated, target_batch)
+    generated_centered = generated - generated.mean(dim=-1, keepdim=True)
+    target_centered = target_batch - target_batch.mean(dim=-1, keepdim=True)
+    numerator = (generated_centered * target_centered).sum(dim=-1)
+    denominator = torch.linalg.vector_norm(generated_centered, dim=-1) * torch.linalg.vector_norm(
+        target_centered, dim=-1
+    )
+    pearson = numerator / denominator.clamp_min(eps)
+    mean_pearson = pearson.mean()
+    loss = mse + correlation_weight * (1.0 - mean_pearson)
+    return loss, mse, mean_pearson
+
+
 def active_latent_length(pipe: Any, duration_seconds: float) -> int:
     """Число latent-позиций, соответствующее обрезаемому итоговому WAV."""
     if duration_seconds <= 0:
@@ -542,6 +573,7 @@ def guide_denoising_latents_with_decoder(
     sigma_data: float = 1.0,
     prediction_type: str = "v_prediction",
     max_backtracking_steps: int = 3,
+    correlation_weight: float = 0.1,
 ) -> tuple[torch.Tensor, float, dict[str, float | int]]:
     """Скорректировать noisy latent по точной waveform-loss его x0-прогноза.
 
@@ -563,6 +595,8 @@ def guide_denoising_latents_with_decoder(
         raise ValueError("max_relative_step должен быть в диапазоне (0, 1]")
     if max_backtracking_steps < 0:
         raise ValueError("max_backtracking_steps не может быть отрицательным")
+    if correlation_weight < 0:
+        raise ValueError("correlation_weight не может быть отрицательным")
     if reference_active_length is None:
         reference_active_length = active_length
     if reference_active_length <= 0:
@@ -592,7 +626,11 @@ def guide_denoising_latents_with_decoder(
     target = resample_target_envelope(
         target_envelope.to(latents.device, torch.float32), envelope.shape[-1]
     )
-    loss = F.mse_loss(envelope, target.unsqueeze(0).expand_as(envelope))
+    loss, mse_before, pearson_before = envelope_shape_loss(
+        envelope,
+        target,
+        correlation_weight=correlation_weight,
+    )
     if not torch.isfinite(loss):
         raise FloatingPointError("Decoder denoising loss содержит NaN/Inf")
     gradient = torch.autograd.grad(loss, working, only_inputs=True)[0].float()
@@ -624,20 +662,29 @@ def guide_denoising_latents_with_decoder(
         candidate[:, :, :active_length] = anchor_active + candidate_scale * projected_delta
         with torch.no_grad():
             candidate_envelope = decode_envelope(candidate)
-            candidate_loss = F.mse_loss(
+            candidate_loss, candidate_mse, candidate_pearson = envelope_shape_loss(
                 candidate_envelope,
-                target.unsqueeze(0).expand_as(candidate_envelope),
+                target,
+                correlation_weight=correlation_weight,
             )
         if not torch.isfinite(candidate_loss):
             raise FloatingPointError("Decoder denoising candidate loss содержит NaN/Inf")
-        if candidate_loss < loss.detach():
+        improves_joint_loss = candidate_loss < loss.detach()
+        preserves_mse = candidate_mse <= mse_before.detach() + 1e-8
+        preserves_pearson = candidate_pearson >= pearson_before.detach() - 1e-6
+        if improves_joint_loss and preserves_mse and preserves_pearson:
             corrected_fp32 = candidate
             loss_after = candidate_loss
+            mse_after = candidate_mse
+            pearson_after = candidate_pearson
             accepted = True
             accepted_scale = candidate_scale
             break
 
     accepted_delta = accepted_scale * projected_delta
+    if not accepted:
+        mse_after = mse_before.detach()
+        pearson_after = pearson_before.detach()
     correction_norm = torch.linalg.vector_norm(accepted_delta)
     active_latent_norm = torch.linalg.vector_norm(anchor_active).clamp_min(1e-8)
     frame_relative = torch.linalg.vector_norm(accepted_delta, dim=1) / anchor_frame_norm.clamp_min(
@@ -656,6 +703,11 @@ def guide_denoising_latents_with_decoder(
         "duration_scale": duration_scale,
         "accepted": int(accepted),
         "backtracking_scale": accepted_scale,
+        "correlation_weight": correlation_weight,
+        "mse_before": float(mse_before.detach().cpu()),
+        "mse_after": float(mse_after.detach().cpu()),
+        "pearson_before": float(pearson_before.detach().cpu()),
+        "pearson_after": float(pearson_after.detach().cpu()),
         "loss_after": float(loss_after.detach().cpu()),
     }
     return corrected, float(loss.detach().cpu()), diagnostics
@@ -770,6 +822,7 @@ def generate_sfx(
     guidance_mode: str = "denoising",
     final_guidance_steps: int = 10,
     decoder_guidance_start_fraction: float = 0.7,
+    decoder_correlation_weight: float = 0.1,
     return_active_latents: bool = False,
 ) -> StableAudioGenerationResult:
     """Выполнить baseline (gamma=0) или Direct Latent Guidance.
@@ -798,6 +851,8 @@ def generate_sfx(
         raise ValueError("final_guidance_steps должен быть положительным")
     if not 0.5 <= decoder_guidance_start_fraction < 1:
         raise ValueError("decoder_guidance_start_fraction должен быть в [0.5, 1)")
+    if not 0 <= decoder_correlation_weight <= 1:
+        raise ValueError("decoder_correlation_weight должен быть в [0, 1]")
 
     device = torch.device("cuda")
     latents = initial_latents.detach().clone().to(device)
@@ -895,6 +950,7 @@ def generate_sfx(
                 reference_active_length=reference_active_length,
                 sigma_data=float(pipe.scheduler.config.sigma_data),
                 prediction_type=str(pipe.scheduler.config.prediction_type),
+                correlation_weight=decoder_correlation_weight,
             )
             last_loss = float(step_diagnostics["loss_after"])
             guidance_trace.append(

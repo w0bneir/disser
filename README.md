@@ -198,13 +198,15 @@ python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 
 Режим `decoder_denoising` предназначен для структурных изменений, которые
 final-only коррекция уже не успевает внести. Он декодирует predicted x0 в трёх
 точках последних 30% denoising-траектории. При 50 шагах это индексы 35, 42 и
-49 (`sigma` примерно 2.50, 0.87 и 0.30). Каждый шаг обязан уменьшить точную
-waveform-MSE; при необходимости применяется backtracking. Коррекция каждой
+49 (`sigma` примерно 2.50, 0.87 и 0.30). Целевая функция объединяет точную
+waveform-MSE и `0.1 * (1 - Pearson)`, чтобы оптимизация улучшала не только
+среднюю ошибку, но и временную форму огибающей. Каждый шаг обязан уменьшить
+эту функцию; при необходимости применяется backtracking. Коррекция каждой
 latent-позиции ограничена 3% на один выбранный denoising-шаг, режим допускает
 не более трёх точек и только одну пару за запуск.
 
 Первый GPU-запуск нового режима должен быть только smoke-test:
 
 ```bat
-python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --envelope-probe models\envelope_probe.safetensors --probe-guidance-mode decoder_denoising --final-guidance-steps 3 --decoder-guidance-start-fraction 0.7 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_decoder_denoising_smoke
+python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --envelope-probe models\envelope_probe.safetensors --probe-guidance-mode decoder_denoising --final-guidance-steps 3 --decoder-guidance-start-fraction 0.7 --decoder-correlation-weight 0.1 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_decoder_denoising_shape_smoke
 ```
