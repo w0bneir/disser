@@ -2,6 +2,7 @@
 
 - `reference_variations.json` — основной same-family эксперимент диссертации;
 - `text_probe.json` — диагностическая text-only генерация без референса;
+- `dsp_baseline.json` — зафиксированный pitch/time/EQ-контроль `DSP v1`;
 - `stress_tests/wood_to_metal.json` — дополнительный тест замены материала,
   не являющийся основной задачей.
 

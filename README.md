@@ -42,6 +42,12 @@ Pearson с `0.1257` до `0.6602`, снизил MSE с `0.1286` до `0.0436` и
 подтверждение гипотезы: обязательны повторения на seed 42, 2026, новых
 референсах и слепая слуховая оценка.
 
+Зафиксированный DSP v1 является сильным контролем: на трёх wood-creak
+вариациях медианный Envelope Pearson равен `0.8273`, тогда как текущий
+Reference SDEdit seed 17 даёт `0.6602`. Поэтому дальнейшая проверка оценивает
+не только совпадение огибающей, но и естественность, идентичность события и
+межвариантное разнообразие.
+
 Решения по экспериментам собраны в [docs/RESULTS_INDEX.md](docs/RESULTS_INDEX.md),
 а заранее определённый протокол — в
 [docs/EXPERIMENT_PROTOCOL.md](docs/EXPERIMENT_PROTOCOL.md).
@@ -51,11 +57,13 @@ Pearson с `0.1257` до `0.6602`, снизил MSE с `0.1286` до `0.0436` и
 ```text
 configs/
   reference_variations.json       основная same-family серия
+  dsp_baseline.json               зафиксированный DSP v1
   text_probe.json                 диагностическая text-only генерация
   stress_tests/                   дополнительные стресс-тесты
 docs/
   RESEARCH_SCOPE.md               тема, вопрос, гипотеза и критерии
   EXPERIMENT_PROTOCOL.md          сравниваемые методы и метрики
+  METRICS.md                      точные определения CPU-метрик v1
   RESULTS_INDEX.md                индекс значимых экспериментов
 references/                       исходные WAV-референсы
 requirements/                     зависимости для разных поколений GPU
@@ -63,8 +71,12 @@ tools/                            preflight, мониторинг и служе�
 results/                          локальные артефакты запусков, не входят в Git
 archive/audioldm/                 исторические эксперименты AudioLDM
 run_stable_audio_experiments.py   основной безопасный runner
+run_dsp_baseline.py               CPU pitch/time/EQ-контроль
+evaluate_reference_variations.py единая CPU-оценка четырёх методов
+dsp_baseline.py                   воспроизводимые DSP-преобразования
+sfx_metrics.py                    структура, спектр и non-copy метрики
 stable_audio_guidance.py          denoising и reference-latent методы
-stable_audio_probe.py             text-only baseline
+stable_audio_probe.py             диагностический text-only probe
 test_*.py                         CPU-модульные тесты
 ```
 
@@ -112,6 +124,25 @@ python run_stable_audio_experiments.py --preflight-only --config configs\referen
 Предохранитель требует не менее 12000 MiB общей и 10000 MiB свободной VRAM.
 Параметр `--allow-unsafe-vram` не используется в основном исследовании.
 
+## DSP-контроль и единая оценка
+
+DSP v1 полностью выполняется на CPU и создаёт три pitch/time/EQ-вариации для
+каждого референса:
+
+```bat
+python run_dsp_baseline.py --resume
+```
+
+Когда paired text-only и Reference SDEdit готовы в одном каталоге, четыре
+метода оцениваются одной командой:
+
+```bat
+python evaluate_reference_variations.py --case-id wood_creak --reference references\wood_creak.wav --generation-results-dir results\2026-08-19_wood_reference_sde_50step_01 --output-dir results\2026-08-19_wood_reference_sde_50step_01\evaluation_3seed_v1 --seeds 17 42 2026
+```
+
+Создаются `file_metrics.csv`, сводки по методам и разнообразию, а также общий
+график RMS-огибающих. Все сигналы анализируются при 44,1 кГц.
+
 ## Безопасный запуск Reference SDEdit
 
 Любой новый маршрут сначала проверяется четырёхшаговым smoke-test одной пары:
@@ -135,14 +166,15 @@ python run_stable_audio_experiments.py --config configs\reference_variations.jso
 Один удачный WAV не подтверждает метод. Для каждой серии сравниваются:
 
 - неизменённый Repeat;
-- умеренные pitch/time/EQ/gain-модификации;
+- умеренные pitch/time/EQ-модификации;
 - text-only Stable Audio;
 - Reference SDEdit.
 
-Оцениваются огибающая и атаки, embedding-сходство с референсом,
-внутрипакетное разнообразие, отсутствие тривиального копирования, артефакты,
-VRAM/время и слепые оценки слушателей. Веб-интерфейс создаётся после того, как
-метод даст воспроизводимый результат на нескольких референсах и seed.
+Текущий `sfx_metrics_v1` оценивает огибающую, атаки, спектр, внутрипакетное
+разнообразие и отсутствие тривиального копирования. Аудиоэмбеддинги,
+VRAM/время и слепые оценки слушателей добавляются в итоговый протокол отдельно.
+Веб-интерфейс создаётся после того, как метод даст воспроизводимый результат на
+нескольких референсах и seed.
 
 ## Данные и воспроизводимость
 
