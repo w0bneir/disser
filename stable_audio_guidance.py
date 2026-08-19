@@ -25,6 +25,7 @@ class StableAudioGenerationResult:
     active_latents: torch.Tensor | None
     guidance_loss: float | None
     guidance_trace: list[dict[str, float | int]]
+    initialization: dict[str, float | int | str]
     elapsed_seconds: float
     peak_vram_mb: float
 
@@ -168,6 +169,24 @@ def active_latent_length(pipe: Any, duration_seconds: float) -> int:
     hop_length = int(pipe.vae.hop_length)
     maximum = int(pipe.transformer.config.sample_size)
     return max(1, min(maximum, ceil(duration_seconds * sample_rate / hop_length)))
+
+
+def reference_sde_start_index(num_inference_steps: int, noise_strength: float) -> int:
+    """Начальный индекс хвоста расписания для reference SDEdit.
+
+    ``noise_strength=1`` использует полное расписание, а малые значения оставляют
+    только поздние шаги и сильнее сохраняют VAE-latent референса. ``ceil`` нужен,
+    чтобы даже 4-шаговый smoke-test проходил минимум два шага при strength=0.3.
+    """
+    if num_inference_steps <= 0:
+        raise ValueError("num_inference_steps должен быть положительным")
+    if not 0 < noise_strength <= 1:
+        raise ValueError("reference noise strength должен быть в диапазоне (0, 1]")
+    effective_steps = min(
+        num_inference_steps,
+        max(1, ceil(num_inference_steps * noise_strength)),
+    )
+    return num_inference_steps - effective_steps
 
 
 def _x0_from_v_prediction(
@@ -802,6 +821,95 @@ def prepare_initial_latents(pipe: Any, *, seed: int, device: torch.device) -> to
     )
 
 
+def encode_reference_audio_latents(
+    pipe: Any,
+    waveform: torch.Tensor,
+    *,
+    duration_seconds: float,
+    device: torch.device,
+    context_frames: int = 64,
+) -> torch.Tensor:
+    """Детерминированно кодировать референс и дополнить latent до размера DiT.
+
+    VAE получает только активный фрагмент плюс ограниченный контекст, а не
+    максимальные 47 секунд Stable Audio. Это существенно снижает VRAM при
+    сохранении контекста декодера у правой границы целевого WAV.
+    """
+    if waveform.ndim != 1 or waveform.numel() == 0:
+        raise ValueError("Reference waveform должна быть непустым mono-тензором")
+    if not torch.isfinite(waveform).all():
+        raise FloatingPointError("Reference waveform содержит NaN/Inf")
+    if context_frames < 0:
+        raise ValueError("context_frames не может быть отрицательным")
+
+    maximum_frames = int(pipe.transformer.config.sample_size)
+    latent_channels = int(pipe.transformer.config.in_channels)
+    active_frames = active_latent_length(pipe, duration_seconds)
+    encoded_frames = min(maximum_frames, active_frames + context_frames)
+    hop_length = int(pipe.vae.hop_length)
+    audio_channels = int(pipe.vae.config.audio_channels)
+    encoded_samples = encoded_frames * hop_length
+    vae_dtype = getattr(pipe.vae, "dtype", torch.float16)
+
+    audio = torch.zeros(
+        (1, audio_channels, encoded_samples),
+        device=device,
+        dtype=vae_dtype,
+    )
+    copy_length = min(int(waveform.numel()), encoded_samples)
+    mono = waveform[:copy_length].to(device=device, dtype=vae_dtype)
+    audio[:, :, :copy_length] = mono.reshape(1, 1, -1)
+    pipe.vae.requires_grad_(False)
+    with torch.no_grad():
+        distribution = pipe.vae.encode(audio).latent_dist
+        encoded = distribution.mode()
+    if encoded.ndim != 3 or encoded.shape[0] != 1:
+        raise RuntimeError(f"VAE вернул некорректную форму latent: {tuple(encoded.shape)}")
+    if encoded.shape[1] != latent_channels:
+        raise RuntimeError(
+            f"VAE вернул {encoded.shape[1]} каналов, transformer ожидает {latent_channels}"
+        )
+    if not torch.isfinite(encoded).all():
+        raise FloatingPointError("VAE reference latent содержит NaN/Inf")
+
+    full_latents = torch.zeros(
+        (1, latent_channels, maximum_frames),
+        device=device,
+        dtype=encoded.dtype,
+    )
+    copy_frames = min(maximum_frames, encoded.shape[-1])
+    full_latents[:, :, :copy_frames] = encoded[:, :, :copy_frames]
+    return full_latents.detach().to(device="cpu", dtype=torch.float16)
+
+
+def prepare_reference_sde_latents(
+    scheduler: Any,
+    *,
+    reference_latents: torch.Tensor,
+    initial_noise_latents: torch.Tensor,
+    timesteps: torch.Tensor,
+    noise_strength: float,
+) -> tuple[torch.Tensor, int, float]:
+    """Зашумить reference latent тем же шумом, что использует paired baseline."""
+    if reference_latents.shape != initial_noise_latents.shape:
+        raise ValueError("Reference и initial noise latents должны иметь одинаковую форму")
+    if timesteps.ndim != 1 or timesteps.numel() == 0:
+        raise ValueError("Scheduler timesteps должны быть непустым одномерным тензором")
+    start_index = reference_sde_start_index(int(timesteps.numel()), noise_strength)
+    if hasattr(scheduler, "set_begin_index"):
+        scheduler.set_begin_index(start_index)
+    init_sigma = float(scheduler.init_noise_sigma)
+    if not np.isfinite(init_sigma) or init_sigma <= 0:
+        raise ValueError("Scheduler init_noise_sigma должен быть положительным")
+    raw_noise = initial_noise_latents / init_sigma
+    timestep = timesteps[start_index].reshape(1)
+    noisy = scheduler.add_noise(reference_latents, raw_noise, timestep)
+    if not torch.isfinite(noisy).all():
+        raise FloatingPointError("Reference SDEdit initialization содержит NaN/Inf")
+    sigma = float(scheduler.sigmas[start_index])
+    return noisy, start_index, sigma
+
+
 def generate_sfx(
     pipe: Any,
     *,
@@ -812,6 +920,8 @@ def generate_sfx(
     guidance_scale: float,
     seed: int,
     initial_latents: torch.Tensor,
+    reference_latents: torch.Tensor | None = None,
+    reference_noise_strength: float | None = None,
     target_envelope: torch.Tensor | None = None,
     gamma: float = 0.0,
     gradient_clip_norm: float = 0.05,
@@ -836,6 +946,14 @@ def generate_sfx(
         raise ValueError("Для guidance нужен target_envelope")
     if initial_latents.ndim != 3:
         raise ValueError("initial_latents должен иметь форму [batch, channels, time]")
+    if (reference_latents is None) != (reference_noise_strength is None):
+        raise ValueError(
+            "reference_latents и reference_noise_strength должны задаваться вместе"
+        )
+    if reference_latents is not None and gamma > 0:
+        raise ValueError(
+            "Reference SDEdit сначала проверяется изолированно и не совмещается с gradient guidance"
+        )
     if duration_seconds <= 0 or num_inference_steps <= 0:
         raise ValueError("Длительность и число шагов должны быть положительными")
     if guidance_reference_duration_seconds <= 0:
@@ -863,6 +981,32 @@ def generate_sfx(
     waveform_length = int(duration_seconds * int(pipe.vae.config.sampling_rate))
     pipe.scheduler.set_timesteps(num_inference_steps, device=device)
     timesteps = pipe.scheduler.timesteps
+    initialization: dict[str, float | int | str] = {
+        "mode": "gaussian_noise",
+        "start_index": 0,
+        "effective_inference_steps": int(timesteps.numel()),
+        "initial_sigma": float(pipe.scheduler.sigmas[0]),
+    }
+    if reference_latents is not None:
+        reference_on_device = reference_latents.detach().to(
+            device=device,
+            dtype=latents.dtype,
+        )
+        latents, start_index, initial_sigma = prepare_reference_sde_latents(
+            pipe.scheduler,
+            reference_latents=reference_on_device,
+            initial_noise_latents=latents,
+            timesteps=timesteps,
+            noise_strength=float(reference_noise_strength),
+        )
+        timesteps = timesteps[start_index:]
+        initialization = {
+            "mode": "reference_sde",
+            "noise_strength": float(reference_noise_strength),
+            "start_index": start_index,
+            "effective_inference_steps": int(timesteps.numel()),
+            "initial_sigma": initial_sigma,
+        }
     text_duration, global_duration, do_cfg = _prepare_conditions(
         pipe,
         prompt=prompt,
@@ -1030,6 +1174,7 @@ def generate_sfx(
         active_latents=active_latents_cpu,
         guidance_loss=last_loss,
         guidance_trace=guidance_trace,
+        initialization=initialization,
         elapsed_seconds=elapsed_seconds,
         peak_vram_mb=peak_vram_mb,
     )

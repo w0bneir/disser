@@ -210,3 +210,30 @@ latent-позиции ограничена 3% на один выбранный d
 ```bat
 python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --envelope-probe models\envelope_probe.safetensors --probe-guidance-mode decoder_denoising --final-guidance-steps 3 --decoder-guidance-start-fraction 0.7 --decoder-correlation-weight 0.1 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_decoder_denoising_shape_smoke
 ```
+
+Контроль на `wood_creak`, seed 17 показал предел поздней коррекции: при 50
+шагах Pearson вырос только с `0.1257` до `0.1452`, а корреляция огибающих
+baseline/guided осталась `0.9927`. Главный кластер референса на 2.5–2.7 с не
+появился. Поэтому дальнейший подбор gamma и числа поздних шагов не считается
+основным направлением.
+
+Режим `--reference-sde-strength` реализует отдельный audio-to-audio контроль:
+референс детерминированно кодируется VAE, зашумляется тем же seed, что paired
+baseline, и денойзится текстовой моделью только по хвосту исходного расписания.
+Это переносит временную структуру в начальное состояние, пока она ещё может
+повлиять на всю траекторию. Режим намеренно не совмещается с `--gamma`, чтобы
+сначала измерить чистый эффект reference initialization. При strength `0.30`
+4-шаговый smoke использует два последних шага, а 50-шаговый опыт — 15 последних
+шагов со стартом на индексе 35 (`sigma` около 2.50).
+
+Перед первым GPU-запуском:
+
+```bat
+python run_stable_audio_experiments.py --preflight-only --reference-sde-strength 0.30 --max-new-pairs 1
+```
+
+Первый запуск — только новый 4-шаговый smoke-test:
+
+```bat
+python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --reference-sde-strength 0.30 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_reference_sde_smoke
+```

@@ -24,10 +24,12 @@ from run_stable_audio_experiments import (
     validate_envelope_probe_request,
     validate_latent_diagnostics_request,
     validate_probe_guidance_mode,
+    validate_reference_sde_request,
 )
 from stable_audio_guidance import (
     _x0_from_v_prediction,
     active_latent_length,
+    encode_reference_audio_latents,
     envelope_metrics,
     envelope_shape_loss,
     guide_denoising_latents_with_decoder,
@@ -36,6 +38,8 @@ from stable_audio_guidance import (
     guide_latents,
     latent_rms_envelope,
     predict_guidance_envelope,
+    prepare_reference_sde_latents,
+    reference_sde_start_index,
     resample_target_envelope,
     select_decoder_guidance_indices,
     predict_noise_sequential_cfg,
@@ -51,6 +55,62 @@ class _PipeShape:
 class _Scheduler:
     def scale_model_input(self, latents: torch.Tensor, timestep: torch.Tensor) -> torch.Tensor:
         return latents + 1
+
+
+class _ReferenceScheduler:
+    init_noise_sigma = 10.0
+    sigmas = torch.tensor([10.0, 3.0, 1.0, 0.3, 0.0])
+
+    def __init__(self) -> None:
+        self.begin_index: int | None = None
+
+    def set_begin_index(self, index: int) -> None:
+        self.begin_index = index
+
+    def add_noise(
+        self,
+        original_samples: torch.Tensor,
+        noise: torch.Tensor,
+        timesteps: torch.Tensor,
+    ) -> torch.Tensor:
+        del timesteps
+        assert self.begin_index is not None
+        return original_samples + noise * self.sigmas[self.begin_index]
+
+
+class _LatentDistribution:
+    def __init__(self, values: torch.Tensor) -> None:
+        self.values = values
+
+    def mode(self) -> torch.Tensor:
+        return self.values
+
+
+class _ReferenceVae:
+    config = SimpleNamespace(sampling_rate=44_100, audio_channels=2)
+    hop_length = 2048
+    dtype = torch.float32
+
+    def __init__(self) -> None:
+        self.encoded_audio_shape: tuple[int, ...] | None = None
+
+    def requires_grad_(self, enabled: bool) -> "_ReferenceVae":
+        self.requires_grad_enabled = enabled
+        return self
+
+    def encode(self, audio: torch.Tensor) -> SimpleNamespace:
+        self.encoded_audio_shape = tuple(audio.shape)
+        frames = audio.shape[-1] // self.hop_length
+        values = torch.ones(audio.shape[0], 64, frames, dtype=audio.dtype)
+        return SimpleNamespace(latent_dist=_LatentDistribution(values))
+
+
+class _ReferencePipe:
+    def __init__(self) -> None:
+        self.vae = _ReferenceVae()
+        self.transformer = SimpleNamespace(
+            config=SimpleNamespace(sample_size=1024, in_channels=64)
+        )
 
 
 class _Transformer:
@@ -69,6 +129,74 @@ class _CfgPipe:
 
 
 class StableAudioGuidanceTests(unittest.TestCase):
+    def test_reference_sde_request_is_isolated_and_guarded(self) -> None:
+        validate_reference_sde_request(
+            reference_sde_strength=None,
+            requested_gamma=None,
+            max_new_pairs=None,
+        )
+        validate_reference_sde_request(
+            reference_sde_strength=0.3,
+            requested_gamma=None,
+            max_new_pairs=1,
+        )
+        with self.assertRaisesRegex(ValueError, "диапазоне"):
+            validate_reference_sde_request(
+                reference_sde_strength=0.0,
+                requested_gamma=None,
+                max_new_pairs=1,
+            )
+        with self.assertRaisesRegex(ValueError, "нельзя совмещать"):
+            validate_reference_sde_request(
+                reference_sde_strength=0.3,
+                requested_gamma=50.0,
+                max_new_pairs=1,
+            )
+        with self.assertRaisesRegex(ValueError, "--max-new-pairs 1"):
+            validate_reference_sde_request(
+                reference_sde_strength=0.3,
+                requested_gamma=None,
+                max_new_pairs=None,
+            )
+
+    def test_reference_sde_schedule_has_controlled_tail(self) -> None:
+        self.assertEqual(reference_sde_start_index(50, 0.3), 35)
+        self.assertEqual(reference_sde_start_index(4, 0.3), 2)
+        self.assertEqual(reference_sde_start_index(50, 1.0), 0)
+
+    def test_reference_sde_uses_paired_raw_noise_at_selected_sigma(self) -> None:
+        scheduler = _ReferenceScheduler()
+        reference = torch.ones(1, 2, 3)
+        prepared_initial_noise = torch.full_like(reference, 20.0)
+        timesteps = torch.tensor([4.0, 3.0, 2.0, 1.0])
+        noisy, start_index, sigma = prepare_reference_sde_latents(
+            scheduler,
+            reference_latents=reference,
+            initial_noise_latents=prepared_initial_noise,
+            timesteps=timesteps,
+            noise_strength=0.5,
+        )
+        self.assertEqual(start_index, 2)
+        self.assertEqual(scheduler.begin_index, 2)
+        self.assertEqual(sigma, 1.0)
+        self.assertTrue(torch.equal(noisy, torch.full_like(reference, 3.0)))
+
+    def test_reference_encoder_limits_context_and_pads_transformer_latent(self) -> None:
+        pipe = _ReferencePipe()
+        waveform = torch.linspace(-1.0, 1.0, 146_060)
+        latent = encode_reference_audio_latents(
+            pipe,
+            waveform,
+            duration_seconds=146_060 / 44_100,
+            device=torch.device("cpu"),
+            context_frames=64,
+        )
+        self.assertEqual(pipe.vae.encoded_audio_shape, (1, 2, 136 * 2048))
+        self.assertEqual(tuple(latent.shape), (1, 64, 1024))
+        self.assertEqual(latent.dtype, torch.float16)
+        self.assertTrue(torch.all(latent[:, :, :136] == 1))
+        self.assertTrue(torch.all(latent[:, :, 136:] == 0))
+
     def test_final_probe_mode_requires_probe_and_valid_steps(self) -> None:
         validate_probe_guidance_mode(
             probe_guidance_mode="denoising",

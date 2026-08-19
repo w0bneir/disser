@@ -21,6 +21,7 @@ from analyzer import extract_rms_envelope, load_audio
 from audio_io import save_wav
 from envelope_probe import load_waveform_envelope_probe
 from stable_audio_guidance import (
+    encode_reference_audio_latents,
     envelope_metrics,
     generate_sfx,
     prepare_initial_latents,
@@ -240,6 +241,26 @@ def validate_probe_guidance_mode(
         raise ValueError("--decoder-correlation-weight должен быть в диапазоне [0, 1]")
 
 
+def validate_reference_sde_request(
+    *,
+    reference_sde_strength: float | None,
+    requested_gamma: float | None,
+    max_new_pairs: int | None,
+) -> None:
+    """Ограничить новый reference-init режим одним изолированным GPU-опытом."""
+    if reference_sde_strength is None:
+        return
+    if not np.isfinite(reference_sde_strength) or not 0 < reference_sde_strength <= 1:
+        raise ValueError("--reference-sde-strength должен быть в диапазоне (0, 1]")
+    if requested_gamma is not None:
+        raise ValueError(
+            "--reference-sde-strength пока нельзя совмещать с --gamma: "
+            "сначала измеряется чистый эффект reference initialization"
+        )
+    if max_new_pairs != 1:
+        raise ValueError("--reference-sde-strength требует --max-new-pairs 1")
+
+
 def load_reference_for_analysis(
     path: str | Path,
     *,
@@ -411,6 +432,7 @@ def plot_envelopes(
     duration_seconds: float,
     case_id: str,
     seed: int,
+    guided_label: str = "Direct Latent Guidance",
 ) -> None:
     def axis(values: torch.Tensor) -> np.ndarray:
         return np.linspace(0, duration_seconds, values.numel(), endpoint=True)
@@ -418,7 +440,7 @@ def plot_envelopes(
     plt.figure(figsize=(10, 4.5))
     plt.plot(axis(target), target.numpy(), color="black", linewidth=2.2, label="E_target (референс)")
     plt.plot(axis(baseline), baseline.numpy(), color="#6f6f6f", linestyle="--", label="Stable Audio baseline")
-    plt.plot(axis(guided), guided.numpy(), color="#bf2424", linewidth=1.8, label="Direct Latent Guidance")
+    plt.plot(axis(guided), guided.numpy(), color="#bf2424", linewidth=1.8, label=guided_label)
     plt.title(f"{case_id}, seed={seed}")
     plt.xlabel("Время, с")
     plt.ylabel("Нормированная RMS-огибающая")
@@ -459,9 +481,26 @@ def save_guidance_trace(
     csv_path: Path,
     plot_path: Path,
     trace: list[dict[str, float | int]],
+    empty_label: str | None = None,
 ) -> None:
     """Сохранить диагностику силы коррекции и latent-loss по шагам."""
     if not trace:
+        with csv_path.open("w", encoding="utf-8", newline="") as output_file:
+            writer = csv.writer(output_file)
+            writer.writerow(["mode"])
+            writer.writerow([empty_label or "no_gradient_guidance"])
+        figure, axis = plt.subplots(figsize=(9, 4.5))
+        axis.axis("off")
+        axis.text(
+            0.5,
+            0.5,
+            empty_label or "Gradient guidance не применялся",
+            ha="center",
+            va="center",
+        )
+        figure.tight_layout()
+        figure.savefig(plot_path, dpi=160)
+        plt.close(figure)
         return
     columns = list(trace[0])
     with csv_path.open("w", encoding="utf-8", newline="") as output_file:
@@ -532,6 +571,7 @@ def run(
     final_guidance_steps: int,
     decoder_guidance_start_fraction: float,
     decoder_correlation_weight: float,
+    reference_sde_strength: float | None,
     minimum_vram_gb: float,
     minimum_free_vram_gb: float,
     allow_unsafe_vram: bool,
@@ -553,6 +593,11 @@ def run(
         envelope_probe_path=envelope_probe_path,
         decoder_guidance_start_fraction=decoder_guidance_start_fraction,
         decoder_correlation_weight=decoder_correlation_weight,
+    )
+    validate_reference_sde_request(
+        reference_sde_strength=reference_sde_strength,
+        requested_gamma=requested_gamma,
+        max_new_pairs=max_new_pairs,
     )
     envelope_probe = None
     if envelope_probe_path is not None:
@@ -586,6 +631,7 @@ def run(
         requested_gamma=requested_gamma,
         max_new_pairs=max_new_pairs,
     )
+    guided_gamma = 0.0 if reference_sde_strength is not None else guidance_gamma
     results_dir.mkdir(parents=True, exist_ok=True)
     metrics_path = results_dir / "metrics.csv"
     rows: list[dict[str, float | int | str]] = []
@@ -619,7 +665,13 @@ def run(
     else:
         guidance_loss_mode = guidance_envelope_mode
     analysis_sample_rate = int(pipe.vae.config.sampling_rate)
-    print(f"[+] Параметры guidance: gamma={guidance_gamma:g}")
+    if reference_sde_strength is None:
+        print(f"[+] Параметры guidance: gamma={guidance_gamma:g}")
+    else:
+        print(
+            "[+] Reference SDEdit: "
+            f"strength={reference_sde_strength:g}; gradient guidance отключён"
+        )
     completed_pairs = 0
 
     for case in cases:
@@ -632,6 +684,16 @@ def run(
             f"[+] {case['id']}: {duration_seconds:.2f} с, "
             f"{target.numel()} точек E_target при {reference_sample_rate} Гц"
         )
+        reference_latents = None
+        if reference_sde_strength is not None:
+            print("    Кодирование референса в VAE latent для SDEdit...")
+            reference_latents = encode_reference_audio_latents(
+                pipe,
+                waveform,
+                duration_seconds=duration_seconds,
+                device=device,
+            )
+            release_gpu()
 
         for seed in seeds:
             run_dir = results_dir / case["id"] / f"seed_{seed}"
@@ -646,7 +708,10 @@ def run(
             if resume and run_dir.exists():
                 print(f"    seed={seed}: найдены неполные артефакты; пара будет пересоздана.")
 
-            print(f"    seed={seed}: baseline и guidance ({steps} шаг.)...")
+            comparison_name = (
+                "reference SDEdit" if reference_sde_strength is not None else "guidance"
+            )
+            print(f"    seed={seed}: baseline и {comparison_name} ({steps} шаг.)...")
             initial_latents = prepare_initial_latents(pipe, seed=int(seed), device=device)
             baseline = generate_sfx(
                 pipe,
@@ -677,8 +742,10 @@ def run(
                 guidance_scale=float(config["cfg_scale"]),
                 seed=int(seed),
                 initial_latents=initial_latents,
+                reference_latents=reference_latents,
+                reference_noise_strength=reference_sde_strength,
                 target_envelope=target,
-                gamma=guidance_gamma,
+                gamma=guided_gamma,
                 gradient_clip_norm=float(config["gradient_clip_norm"]),
                 guidance_start_fraction=float(config["guidance_start_fraction"]),
                 max_relative_step=float(config["max_relative_step"]),
@@ -697,6 +764,11 @@ def run(
                 run_dir / "guidance_trace.csv",
                 run_dir / "guidance_diagnostics.png",
                 guided.guidance_trace,
+                empty_label=(
+                    "Reference SDEdit initialization; gradient guidance отключён"
+                    if reference_sde_strength is not None
+                    else None
+                ),
             )
 
             baseline_envelope = extract_rms_envelope(torch.from_numpy(baseline.audio.mean(axis=1))).cpu()
@@ -757,6 +829,11 @@ def run(
                 duration_seconds=duration_seconds,
                 case_id=case["id"],
                 seed=int(seed),
+                guided_label=(
+                    "Reference SDEdit"
+                    if reference_sde_strength is not None
+                    else "Direct Latent Guidance"
+                ),
             )
             metadata = {
                 "case_id": case["id"],
@@ -769,7 +846,14 @@ def run(
                 "generated_envelope_points": int(guided_envelope.numel()),
                 "num_inference_steps": steps,
                 "cfg_scale": float(config["cfg_scale"]),
-                "gamma": guidance_gamma,
+                "gamma": guided_gamma,
+                "comparison_mode": (
+                    "reference_sde" if reference_sde_strength is not None else "latent_guidance"
+                ),
+                "initialization": {
+                    "baseline": baseline.initialization,
+                    "guided": guided.initialization,
+                },
                 "gradient_clip_norm": float(config["gradient_clip_norm"]),
                 "guidance_start_fraction": float(config["guidance_start_fraction"]),
                 "max_relative_step": float(config["max_relative_step"]),
@@ -813,7 +897,7 @@ def run(
                         case_id=case["id"],
                         seed=int(seed),
                         mode="guided",
-                        gamma=guidance_gamma,
+                        gamma=guided_gamma,
                         metrics=guided_metrics,
                         elapsed_seconds=guided.elapsed_seconds,
                         peak_vram_mb=guided.peak_vram_mb,
@@ -834,6 +918,13 @@ def run(
                 print(
                     f"      guidance loss ({guidance_loss_mode}): "
                     f"{first_loss:.4f} -> {final_loss:.4f}"
+                )
+            elif reference_sde_strength is not None:
+                print(
+                    "      reference SDEdit: "
+                    f"start={guided.initialization['start_index']}, "
+                    f"sigma={guided.initialization['initial_sigma']:.4f}, "
+                    f"effective_steps={guided.initialization['effective_inference_steps']}"
                 )
             del baseline, guided, initial_latents
             release_gpu()
@@ -940,6 +1031,15 @@ def parse_args() -> argparse.Namespace:
             "в диапазоне [0, 1]."
         ),
     )
+    parser.add_argument(
+        "--reference-sde-strength",
+        type=float,
+        default=None,
+        help=(
+            "Изолированный audio-to-audio SDEdit из VAE-latent референса; "
+            "диапазон (0, 1], требует --max-new-pairs 1 и не совмещается с --gamma."
+        ),
+    )
     parser.add_argument("--minimum-vram-gb", type=float, default=MINIMUM_GUIDANCE_VRAM_GB)
     parser.add_argument("--minimum-free-vram-gb", type=float, default=MINIMUM_GUIDANCE_FREE_VRAM_GB)
     parser.add_argument(
@@ -972,6 +1072,7 @@ if __name__ == "__main__":
             final_guidance_steps=arguments.final_guidance_steps,
             decoder_guidance_start_fraction=arguments.decoder_guidance_start_fraction,
             decoder_correlation_weight=arguments.decoder_correlation_weight,
+            reference_sde_strength=arguments.reference_sde_strength,
             minimum_vram_gb=arguments.minimum_vram_gb,
             minimum_free_vram_gb=arguments.minimum_free_vram_gb,
             allow_unsafe_vram=arguments.allow_unsafe_vram,
