@@ -1,239 +1,152 @@
-# SFX Direct Latent Guidance — черновой демонстратор
+# Reference-guided SFX Variations
 
-Текущая рабочая основа проекта — **Stable Audio Open 1.0**. На этом этапе
-мы проверяем, что текстовая модель сама создаёт узнаваемые SFX, а затем
-добавим управление динамикой по RMS-огибающей пользовательского WAV.
+Исследовательский прототип локальной генерации новых дублей звукового эффекта
+по одному аудиореференсу. Метод должен сохранять узнаваемое событие, его
+макродинамику и ритм, но создавать слышимые естественные вариации вместо точных
+копий.
 
-AudioLDM-эксперименты сохранены как архив: модель дала некачественный
-звуковой результат для этой задачи, поэтому новые запуски на ней не ведутся.
+Тема магистерской диссертации:
 
-## Структура
+> Разработка и оценка метода референс-управляемой генерации вариаций звуковых
+> эффектов с сохранением перцептивной идентичности для интерактивных медиа и
+> игровых аудиосистем.
+
+Полные формулировки исследовательского вопроса, гипотезы и критериев успеха
+зафиксированы в [docs/RESEARCH_SCOPE.md](docs/RESEARCH_SCOPE.md).
+
+## Текущий метод
+
+Основная экспериментальная ветка использует **Reference SDEdit**:
+
+1. WAV-референс кодируется VAE модели Stable Audio Open 1.0.
+2. Его latent-представление умеренно зашумляется с заданным seed.
+3. Модель выполняет условный денойзинг с текстовым описанием того же семейства
+   SFX.
+4. Результат сравнивается с text-only генерацией из того же шума и с честным
+   DSP-baseline.
+
+Параметр `--reference-sde-strength` управляет компромиссом между сохранением
+референса и разнообразием. Первая зафиксированная серия использует strength
+`0.30`: при расписании из 50 шагов выполняются 15 эффективных SDEdit-шагов.
+
+Прежние latent-RMS, probe, final decoder и decoder-denoising режимы сохранены
+для абляционного раздела. Они снижали внутренний loss, но не обеспечили
+достаточного переноса длинной временной структуры.
+
+## Текущая контрольная точка
+
+На `wood_creak`, seed 17 и same-family prompt Reference SDEdit улучшил Envelope
+Pearson с `0.1257` до `0.6602`, снизил MSE с `0.1286` до `0.0436` и перенёс
+слышимый поздний акцент около 2.65 с. Waveform результата не является простой
+копией референса. Это обнадёживающий калибровочный результат, но ещё не
+подтверждение гипотезы: обязательны повторения на seed 42, 2026, новых
+референсах и слепая слуховая оценка.
+
+Решения по экспериментам собраны в [docs/RESULTS_INDEX.md](docs/RESULTS_INDEX.md),
+а заранее определённый протокол — в
+[docs/EXPERIMENT_PROTOCOL.md](docs/EXPERIMENT_PROTOCOL.md).
+
+## Структура проекта
 
 ```text
-analyzer.py                 извлечение RMS-огибающей референса
-audio_io.py                 безопасное сохранение WAV без клиппинга
-stable_audio_probe.py       текущий baseline Stable Audio без guidance
-stable_audio_probe.json     prompt, seed и параметры baseline
-stable_audio_guidance.py    ручной denoising и Direct Latent Guidance
-run_stable_audio_experiments.py  безопасный эксперимент baseline/guided
-stable_audio_experiments.json    конфигурация эксперимента с референсами
-references/                 пользовательские WAV-референсы
-results/stable_audio_probe/ актуальные контрольные результаты
-archive/audioldm/           старый код AudioLDM, сохранён для истории
-results/archive_audioldm/   прежние WAV, графики и метрики AudioLDM
+configs/
+  reference_variations.json       основная same-family серия
+  text_probe.json                 диагностическая text-only генерация
+  stress_tests/                   дополнительные стресс-тесты
+docs/
+  RESEARCH_SCOPE.md               тема, вопрос, гипотеза и критерии
+  EXPERIMENT_PROTOCOL.md          сравниваемые методы и метрики
+  RESULTS_INDEX.md                индекс значимых экспериментов
+references/                       исходные WAV-референсы
+requirements/                     зависимости для разных поколений GPU
+tools/                            preflight, мониторинг и служебные сценарии
+results/                          локальные артефакты запусков, не входят в Git
+archive/audioldm/                 исторические эксперименты AudioLDM
+run_stable_audio_experiments.py   основной безопасный runner
+stable_audio_guidance.py          denoising и reference-latent методы
+stable_audio_probe.py             text-only baseline
+test_*.py                         CPU-модульные тесты
 ```
 
-## Подготовка
+## Окружение RTX 5070
 
-Откройте **Miniconda Prompt**, активируйте среду и перейдите в проект:
+Рабочая конфигурация:
+
+- Windows, Python 3.11, conda `sfx_gen_5070`;
+- PyTorch 2.7.1 с CUDA 12.8;
+- NVIDIA RTX 5070, 12227 MiB VRAM;
+- Stable Audio Open 1.0 с model CPU offload.
+
+Для чистого окружения сначала устанавливается сборка PyTorch под GPU, затем
+общие зависимости:
 
 ```bat
-conda activate sfx_gen
-cd /d D:\YandexDisk\disser
+conda activate sfx_gen_5070
+cd /d C:\Users\godmi\Projects\disser
+python -m pip install -r requirements\windows-cu128-blackwell.txt
+python -m pip install -r requirements\base.txt
 python verify_setup.py
 ```
 
-Для разделённой схемы «код локально, GPU удалённо» и настройки RTX 5070
-используйте [инструкцию удалённого запуска](docs/REMOTE_EXECUTION.md).
+Корневой `requirements.txt` содержит только общие зависимости и намеренно не
+выбирает CUDA-сборку автоматически. Для старых GPU существует отдельный файл
+`requirements\windows-cu121-legacy.txt`.
 
-Проверка библиотек без запуска модели:
+## Проверки без генерации
+
+После изменения кода:
 
 ```bat
+python -B -m unittest discover -v
 python -m pip check
-python -c "from diffusers import StableAudioPipeline; print('Stable Audio: OK')"
 ```
 
-## Безопасный запуск baseline
-
-Запускайте только **один** новый вариант за раз. Уже созданный вариант
-`metal_impact / seed_17` будет пропущен благодаря `--resume`.
+Перед каждым GPU-запуском:
 
 ```bat
-python stable_audio_probe.py --resume --max-new-runs 1 --cooldown-seconds 15
+git pull --ff-only
+powershell -ExecutionPolicy Bypass -File tools\preflight_gpu.ps1
+python run_stable_audio_experiments.py --preflight-only --config configs\reference_variations.json --max-new-pairs 1
 ```
 
-Результат появляется в `results\stable_audio_probe\<id>\seed_<seed>\`:
+Предохранитель требует не менее 12000 MiB общей и 10000 MiB свободной VRAM.
+Параметр `--allow-unsafe-vram` не используется в основном исследовании.
 
-- `audio.wav` — сгенерированный звук;
-- `metadata.json` — prompt, seed, время и пиковая VRAM.
+## Безопасный запуск Reference SDEdit
 
-Если Windows начинает заметно тормозить, сразу нажмите `Ctrl+C`. Не запускайте
-несколько вариантов подряд и не используйте пока команду без `--max-new-runs 1`.
-
-## Следующий этап
-
-Guidance реализован, но ещё не запускался на GPU: референс задаёт форму
-RMS-огибающей, а prompt — акустический материал. Перед первым запуском пройдите
-модульные проверки (они не загружают модель):
+Любой новый маршрут сначала проверяется четырёхшаговым smoke-test одной пары:
 
 ```bat
-python -B -m unittest -v test_stable_audio_guidance.py
+python run_stable_audio_experiments.py --config configs\reference_variations.json --smoke-test --case-id wood_creak --seed 42 --reference-sde-strength 0.30 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\YYYY-MM-DD_wood_reference_sde_smoke_01
 ```
 
-Ручной guidance теперь заблокирован на GPU с менее чем **12 ГБ VRAM**: Stable
-Audio Open с 8 ГБ (включая GTX 1070 и RTX 3070 Laptop) способен подвесить
-драйвер Windows. В CFG ветви выполняются последовательно, без batch=2, что
-снижает пиковую VRAM ценой примерно двукратного времени denoising.
-
-Первый GPU smoke-test запускайте только на GPU с 12+ ГБ VRAM, одной парой
-baseline/guided. Он использует четыре шага denoising; VAE декодирует звук только
-после каждого полного цикла:
+Только после успешного smoke-test запускается одна 50-шаговая пара:
 
 ```bat
-python run_stable_audio_experiments.py --smoke-test --max-new-pairs 1 --cooldown-seconds 20
+python run_stable_audio_experiments.py --config configs\reference_variations.json --num-inference-steps 50 --case-id wood_creak --seed 42 --reference-sde-strength 0.30 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\YYYY-MM-DD_wood_reference_sde_50step_01
 ```
 
-Если система остаётся отзывчивой и в `results\stable_audio_guidance\` созданы
-два WAV, следующий шаг — один полный 50-шаговый pair:
+Для продолжения прерванной серии используется тот же каталог и `--resume`.
+Одновременный запуск нескольких генераций запрещён. Внешний монитор VRAM
+рекомендуется оставлять включённым на весь GPU-прогон.
 
-Перед ним выполните промежуточные одиночные прогоны на 10 и 20 шагах. Они
-требуют явного `--max-new-pairs 1`, поэтому не смогут случайно запустить серию
-GPU-пар:
+## Что считается результатом исследования
 
-```bat
-python run_stable_audio_experiments.py --num-inference-steps 10 --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\stable_audio_10step
-python run_stable_audio_experiments.py --num-inference-steps 20 --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\stable_audio_20step
-```
+Один удачный WAV не подтверждает метод. Для каждой серии сравниваются:
 
-Только после проверки этих двух результатов можно запускать один полный
-50-шаговый pair:
+- неизменённый Repeat;
+- умеренные pitch/time/EQ/gain-модификации;
+- text-only Stable Audio;
+- Reference SDEdit.
 
-```bat
-python run_stable_audio_experiments.py --results-dir results\stable_audio_trial_gamma20 --max-new-pairs 1 --cooldown-seconds 20
-```
+Оцениваются огибающая и атаки, embedding-сходство с референсом,
+внутрипакетное разнообразие, отсутствие тривиального копирования, артефакты,
+VRAM/время и слепые оценки слушателей. Веб-интерфейс создаётся после того, как
+метод даст воспроизводимый результат на нескольких референсах и seed.
 
-Полный пробный прогон использует `gamma=20`, ограничение градиента `0.1` и
-дополнительный предел коррекции 3% от нормы активного латента на шаг. Он также
-сохраняет `guidance_trace.csv` и `guidance_diagnostics.png` для проверки того,
-что latent-loss действительно уменьшается.
+## Данные и воспроизводимость
 
-Референс и сгенерированный WAV анализируются на одной частоте модели (44,1 кГц).
-Это принципиально для корректной RMS-метрики: окно в 2048 отсчётов должно иметь
-одинаковую физическую длительность у обеих сравниваемых записей.
-
-Для одиночной проверки силы guidance можно переопределить `gamma`, не изменяя
-JSON-конфигурацию. Диапазон ограничен пользовательским интервалом `(0, 50]`, а
-команда обязательно требует предохранитель `--max-new-pairs 1`:
-
-```bat
-python run_stable_audio_experiments.py --num-inference-steps 20 --gamma 50 --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\stable_audio_20step_gamma50
-```
-
-Чтобы `gamma` не ослабевал с ростом длительности SFX, mean-loss gradient
-нормируется относительно 0,5 секунды latent-времени. Для файлов короче этого
-порога поведение не меняется; для более длинных коррекция усиливается
-пропорционально числу активных latent-позиций и всё равно ограничивается
-`max_relative_step`.
-
-Один конкретный case и seed можно безопасно выбрать без изменения JSON. Это
-нужно для изолированного smoke-test после алгоритмических изменений:
-
-```bat
-python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_duration_scaled_smoke
-```
-
-Для построения waveform-aware envelope probe предусмотрен диагностический
-экспорт. Флаг сохраняет `latent_diagnostics.npz` с active latents и выровненными
-target/latent/waveform-огибающими. NPZ содержит только числовые массивы и
-открывается с `allow_pickle=False`; экспорт всегда ограничен одной GPU-парой:
-
-```bat
-python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_latent_diagnostics_smoke
-```
-
-Следующий этап не подключается к generation автоматически: сначала по
-нескольким независимым NPZ обучается малый waveform-aware probe. Он использует
-знаковую ridge-проекцию latent-каналов: это учитывает, что VAE декодирует каналы
-с разными знаками, и остаётся полностью differentiable по входному latent.
-Ridge alpha выбирается leave-one-pair-out проверкой только внутри train-набора.
-Разделение
-train/validation выполняется по целым baseline/guided-парам, поэтому два почти
-одинаковых результата одного seed не могут попасть по разные стороны проверки.
-По умолчанию обучение CPU требует минимум шесть независимых 50-шаговых пар
-(текущий набор: два case × три seed). Smoke-результаты в обучающий набор не
-включаются, потому что распределение финальных latents после 4 и 50 шагов
-различается:
-
-```bat
-python train_envelope_probe.py results\probe_dataset --output models\envelope_probe.safetensors
-```
-
-Вместе с весами сохраняется JSON-отчёт, где качество probe на отложенных парах
-сопоставлено с текущей latent-RMS огибающей. Подключать probe к guidance можно
-только после улучшения validation Pearson без ухудшения validation MSE.
-
-На наборе `2026-08-18_probe_dataset_50step_01` версия
-`signed_latent_ridge_v2` выбрала `alpha=1.0` внутренним leave-one-pair-out CV.
-На полностью отложенном seed 2026 для обоих case средний Pearson вырос с
-`0.6166` до `0.8238`, а MSE снизился с `0.0951` до `0.0360`. Контрольный барьер
-пройден; checkpoint сохранён как `models/envelope_probe.safetensors`.
-
-Probe подключается только явно через `--envelope-probe` и пока остаётся
-ограниченным одной парой. Старый latent-RMS без этого флага работает без
-изменений. Первый GPU-запуск после интеграции должен быть только 4-шаговым
-smoke-test с новым каталогом результатов:
-
-```bat
-python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --envelope-probe models\envelope_probe.safetensors --probe-guidance-mode final --final-guidance-steps 10 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_probe_guidance_smoke
-```
-
-Режим `denoising` оставлен для абляционного сравнения, но не рекомендуется:
-35 локальных ограничений по 3% накопились в итоговое отклонение latent на 12.5%
-и позволили оптимизации обмануть surrogate. Режим `final` сначала завершает
-обычный denoising, затем оптимизирует только final latent. Каждая временная
-позиция всё время остаётся внутри 3% от исходного anchor, поэтому локальные
-шаги не могут накопиться в неограниченный drift.
-
-Экспериментальный режим `decoder` использует точный градиент реальной
-waveform-огибающей после завершения denoising. Он декодирует
-`active latent + 64` контекстных позиции и допускает от одного до трёх VAE
-backward-итераций. Все итерации проецируются относительно одного исходного
-anchor, поэтому суммарное изменение каждой временной позиции остаётся внутри
-3%-trust region. Режим по-прежнему жёстко ограничен одной парой.
-
-```bat
-python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --envelope-probe models\envelope_probe.safetensors --probe-guidance-mode decoder --final-guidance-steps 3 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_decoder_guidance_3step_smoke
-```
-
-Режим `decoder_denoising` предназначен для структурных изменений, которые
-final-only коррекция уже не успевает внести. Он декодирует predicted x0 в трёх
-точках последних 30% denoising-траектории. При 50 шагах это индексы 35, 42 и
-49 (`sigma` примерно 2.50, 0.87 и 0.30). Целевая функция объединяет точную
-waveform-MSE и `0.1 * (1 - Pearson)`, чтобы оптимизация улучшала не только
-среднюю ошибку, но и временную форму огибающей. Каждый шаг обязан уменьшить
-эту функцию; при необходимости применяется backtracking. Коррекция каждой
-latent-позиции ограничена 3% на один выбранный denoising-шаг, режим допускает
-не более трёх точек и только одну пару за запуск.
-
-Первый GPU-запуск нового режима должен быть только smoke-test:
-
-```bat
-python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --gamma 50 --envelope-probe models\envelope_probe.safetensors --probe-guidance-mode decoder_denoising --final-guidance-steps 3 --decoder-guidance-start-fraction 0.7 --decoder-correlation-weight 0.1 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_decoder_denoising_shape_smoke
-```
-
-Контроль на `wood_creak`, seed 17 показал предел поздней коррекции: при 50
-шагах Pearson вырос только с `0.1257` до `0.1452`, а корреляция огибающих
-baseline/guided осталась `0.9927`. Главный кластер референса на 2.5–2.7 с не
-появился. Поэтому дальнейший подбор gamma и числа поздних шагов не считается
-основным направлением.
-
-Режим `--reference-sde-strength` реализует отдельный audio-to-audio контроль:
-референс детерминированно кодируется VAE, зашумляется тем же seed, что paired
-baseline, и денойзится текстовой моделью только по хвосту исходного расписания.
-Это переносит временную структуру в начальное состояние, пока она ещё может
-повлиять на всю траекторию. Режим намеренно не совмещается с `--gamma`, чтобы
-сначала измерить чистый эффект reference initialization. При strength `0.30`
-4-шаговый smoke использует два последних шага, а 50-шаговый опыт — 15 последних
-шагов со стартом на индексе 35 (`sigma` около 2.50).
-
-Перед первым GPU-запуском:
-
-```bat
-python run_stable_audio_experiments.py --preflight-only --reference-sde-strength 0.30 --max-new-pairs 1
-```
-
-Первый запуск — только новый 4-шаговый smoke-test:
-
-```bat
-python run_stable_audio_experiments.py --smoke-test --case-id wood_creak --seed 17 --reference-sde-strength 0.30 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\wood_reference_sde_smoke
-```
+`results/`, кэши моделей и крупные артефакты не коммитятся. Значимые численные
+выводы вручную заносятся в `docs/RESULTS_INDEX.md`, а каждый каталог эксперимента
+должен содержать параметры, метрики и контекст запуска. Исходные WAV в
+`references/` не изменяются во время серии.

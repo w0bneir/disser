@@ -1,0 +1,19 @@
+{
+  "model_id": "stabilityai/stable-audio-open-1.0",
+  "seeds": [17],
+  "num_inference_steps": 50,
+  "cfg_scale": 7.0,
+  "gamma": 20.0,
+  "gradient_clip_norm": 0.1,
+  "guidance_start_fraction": 0.3,
+  "max_relative_step": 0.03,
+  "guidance_reference_duration_seconds": 0.5,
+  "negative_prompt": "wood, wooden, music, melody, singing, speech, ambience, low quality, distortion, hiss",
+  "cases": [
+    {
+      "id": "wood_to_metal",
+      "reference_path": "references/wood_creak.wav",
+      "prompt": "single heavy sci-fi metal mechanism creak, hydraulic strain, resonant steel friction, close-up isolated cinematic foley sound effect, no ambience"
+    }
+  ]
+}

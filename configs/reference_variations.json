@@ -8,7 +8,7 @@
   "guidance_start_fraction": 0.3,
   "max_relative_step": 0.03,
   "guidance_reference_duration_seconds": 0.5,
-  "negative_prompt": "music, melody, singing, speech, low quality, distortion, hiss",
+  "negative_prompt": "music, melody, singing, speech, ambience, low quality, distortion, hiss",
   "cases": [
     {
       "id": "metal_impact",
@@ -22,3 +22,4 @@
     }
   ]
 }
+

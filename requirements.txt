@@ -1,12 +1,8 @@
---extra-index-url https://download.pytorch.org/whl/cu121
-torch==2.5.1+cu121
-torchaudio==2.5.1+cu121
-diffusers==0.39.0
-transformers>=4.44,<5
-accelerate>=0.34,<2
-soundfile>=0.12,<1
-matplotlib>=3.8,<4
-numpy>=1.26,<3
-safetensors>=0.4,<1
-sentencepiece>=0.2,<1
-torchsde>=0.2,<1
+# Общие зависимости без выбора CUDA-сборки PyTorch.
+#
+# Сначала установите один совместимый файл из requirements/, например:
+#   python -m pip install -r requirements/windows-cu128-blackwell.txt
+# Затем установите этот файл:
+#   python -m pip install -r requirements.txt
+
+-r requirements/base.txt

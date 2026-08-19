@@ -1,6 +1,8 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.matplotlib*/
+*.reapeaks
 
 # Generated audio and plots can be reproduced from the configurations.
 results/

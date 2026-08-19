@@ -1,4 +1,4 @@
-"""Сравнить Stable Audio baseline и Direct Latent Guidance на WAV-референсах."""
+"""Сравнить text-only baseline и reference-guided Stable Audio на WAV."""
 
 from __future__ import annotations
 
@@ -940,8 +940,16 @@ def run(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=Path("stable_audio_experiments.json"))
-    parser.add_argument("--results-dir", type=Path, default=Path("results/stable_audio_guidance"))
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/reference_variations.json"),
+    )
+    parser.add_argument(
+        "--results-dir",
+        type=Path,
+        default=Path("results/reference_variations"),
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--cooldown-seconds", type=float, default=15.0)
     parser.add_argument("--max-new-pairs", type=int, default=None)

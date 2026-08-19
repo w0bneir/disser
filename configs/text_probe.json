@@ -4,7 +4,7 @@
   "num_inference_steps": 50,
   "cfg_scale": 7.0,
   "seeds": [17, 42, 2026],
-  "negative_prompt": "music, melody, singing, speech, low quality, distortion, hiss",
+  "negative_prompt": "music, melody, singing, speech, ambience, low quality, distortion, hiss",
   "cases": [
     {
       "id": "metal_impact",

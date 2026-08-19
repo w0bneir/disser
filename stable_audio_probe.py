@@ -173,7 +173,11 @@ def run(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--config", type=Path, default=Path("stable_audio_probe.json"))
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path("configs/text_probe.json"),
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("results/stable_audio_probe"))
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--cooldown-seconds", type=float, default=8.0)

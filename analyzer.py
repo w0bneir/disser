@@ -65,7 +65,7 @@ def plot_and_save(
     samples: torch.Tensor,
     rms_normalized: torch.Tensor,
     sample_rate: int,
-    output_image: str | Path = "envelope_result.png",
+    output_image: str | Path = "results/envelope_result.png",
 ) -> None:
     """Сохранить график исходного сигнала и его RMS-огибающей."""
     import matplotlib
@@ -78,6 +78,9 @@ def plot_and_save(
     time_audio = np.linspace(0, len(samples_cpu) / sample_rate, num=len(samples_cpu))
     time_rms = np.linspace(0, len(samples_cpu) / sample_rate, num=len(envelope_cpu))
 
+    output_path = Path(output_image)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
     plt.figure(figsize=(10, 4))
     plt.plot(time_audio, samples_cpu, label="Исходный сигнал", color="gray", alpha=0.5)
     plt.plot(time_rms, envelope_cpu, label="RMS-огибающая", color="red", linewidth=2)
@@ -87,9 +90,9 @@ def plot_and_save(
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(output_image, dpi=300)
+    plt.savefig(output_path, dpi=300)
     plt.close()
-    print(f"[+] График анализа сохранен: {output_image}")
+    print(f"[+] График анализа сохранен: {output_path}")
 
 
 if __name__ == "__main__":

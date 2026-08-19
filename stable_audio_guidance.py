@@ -1,4 +1,4 @@
-"""Direct Latent Guidance для Stable Audio Open без VAE в цикле денойзинга."""
+"""Reference-guided denoising и абляционные guidance-режимы Stable Audio."""
 
 from __future__ import annotations
 
