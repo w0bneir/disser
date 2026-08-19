@@ -210,19 +210,30 @@ def validate_probe_guidance_mode(
     probe_guidance_mode: str,
     final_guidance_steps: int,
     envelope_probe_path: Path | None,
+    decoder_guidance_start_fraction: float = 0.7,
 ) -> None:
-    if probe_guidance_mode not in {"denoising", "final", "decoder"}:
+    valid_modes = {"denoising", "final", "decoder", "decoder_denoising"}
+    if probe_guidance_mode not in valid_modes:
         raise ValueError("Неизвестный probe guidance mode")
     if not 1 <= final_guidance_steps <= 100:
         raise ValueError("--final-guidance-steps должен быть в диапазоне [1, 100]")
-    if probe_guidance_mode in {"final", "decoder"} and envelope_probe_path is None:
+    if (
+        probe_guidance_mode in {"final", "decoder", "decoder_denoising"}
+        and envelope_probe_path is None
+    ):
         raise ValueError(
             f"--probe-guidance-mode {probe_guidance_mode} требует --envelope-probe"
         )
-    if probe_guidance_mode == "decoder" and final_guidance_steps > 3:
+    if probe_guidance_mode in {"decoder", "decoder_denoising"} and final_guidance_steps > 3:
         raise ValueError(
-            "Экспериментальный decoder mode допускает --final-guidance-steps "
+            "Экспериментальные decoder modes допускают --final-guidance-steps "
             "в диапазоне [1, 3]"
+        )
+    if probe_guidance_mode == "decoder_denoising" and not (
+        0.5 <= decoder_guidance_start_fraction < 1
+    ):
+        raise ValueError(
+            "--decoder-guidance-start-fraction должен быть в диапазоне [0.5, 1)"
         )
 
 
@@ -516,6 +527,7 @@ def run(
     envelope_probe_path: Path | None,
     probe_guidance_mode: str,
     final_guidance_steps: int,
+    decoder_guidance_start_fraction: float,
     minimum_vram_gb: float,
     minimum_free_vram_gb: float,
     allow_unsafe_vram: bool,
@@ -535,6 +547,7 @@ def run(
         probe_guidance_mode=probe_guidance_mode,
         final_guidance_steps=final_guidance_steps,
         envelope_probe_path=envelope_probe_path,
+        decoder_guidance_start_fraction=decoder_guidance_start_fraction,
     )
     envelope_probe = None
     if envelope_probe_path is not None:
@@ -595,7 +608,9 @@ def run(
     if envelope_probe is not None:
         guidance_envelope_mode = f"waveform_probe_{probe_guidance_mode}"
     guidance_loss_mode = (
-        "decoder_waveform" if probe_guidance_mode == "decoder" else guidance_envelope_mode
+        "decoder_waveform"
+        if probe_guidance_mode in {"decoder", "decoder_denoising"}
+        else guidance_envelope_mode
     )
     analysis_sample_rate = int(pipe.vae.config.sampling_rate)
     print(f"[+] Параметры guidance: gamma={guidance_gamma:g}")
@@ -640,6 +655,7 @@ def run(
                 envelope_probe=envelope_probe,
                 guidance_mode=probe_guidance_mode,
                 final_guidance_steps=final_guidance_steps,
+                decoder_guidance_start_fraction=decoder_guidance_start_fraction,
                 return_active_latents=export_latent_diagnostics,
             )
             run_dir.mkdir(parents=True, exist_ok=True)
@@ -665,6 +681,7 @@ def run(
                 envelope_probe=envelope_probe,
                 guidance_mode=probe_guidance_mode,
                 final_guidance_steps=final_guidance_steps,
+                decoder_guidance_start_fraction=decoder_guidance_start_fraction,
                 return_active_latents=export_latent_diagnostics,
             )
             save_wav(guided_path, guided.audio, guided.sample_rate)
@@ -750,6 +767,7 @@ def run(
                 "max_relative_step": float(config["max_relative_step"]),
                 "probe_guidance_mode": probe_guidance_mode,
                 "final_guidance_steps": final_guidance_steps,
+                "decoder_guidance_start_fraction": decoder_guidance_start_fraction,
                 "guidance_reference_duration_seconds": float(
                     config["guidance_reference_duration_seconds"]
                 ),
@@ -877,18 +895,32 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--probe-guidance-mode",
-        choices=("denoising", "final", "decoder"),
+        choices=("denoising", "final", "decoder", "decoder_denoising"),
         default="denoising",
         help=(
             "denoising применяет probe на каждом шаге; final выполняет "
-            "projected probe-guidance; decoder — один точный VAE-aware шаг."
+            "projected probe-guidance; decoder выполняет точную финальную "
+            "VAE-aware коррекцию; decoder_denoising применяет точный градиент "
+            "к выбранным поздним x0-прогнозам."
         ),
     )
     parser.add_argument(
         "--final-guidance-steps",
         type=int,
         default=10,
-        help="Число projected-gradient шагов для --probe-guidance-mode final.",
+        help=(
+            "Число projected-gradient итераций для final/decoder или число "
+            "выбранных поздних шагов для decoder_denoising."
+        ),
+    )
+    parser.add_argument(
+        "--decoder-guidance-start-fraction",
+        type=float,
+        default=0.7,
+        help=(
+            "Начало окна decoder_denoising в диапазоне [0.5, 1); "
+            "по умолчанию последние 30%% траектории."
+        ),
     )
     parser.add_argument("--minimum-vram-gb", type=float, default=MINIMUM_GUIDANCE_VRAM_GB)
     parser.add_argument("--minimum-free-vram-gb", type=float, default=MINIMUM_GUIDANCE_FREE_VRAM_GB)
@@ -920,6 +952,7 @@ if __name__ == "__main__":
             envelope_probe_path=arguments.envelope_probe,
             probe_guidance_mode=arguments.probe_guidance_mode,
             final_guidance_steps=arguments.final_guidance_steps,
+            decoder_guidance_start_fraction=arguments.decoder_guidance_start_fraction,
             minimum_vram_gb=arguments.minimum_vram_gb,
             minimum_free_vram_gb=arguments.minimum_free_vram_gb,
             allow_unsafe_vram=arguments.allow_unsafe_vram,

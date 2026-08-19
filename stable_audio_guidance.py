@@ -497,6 +497,170 @@ def guide_final_latents_with_decoder(
     return corrected, last_loss, trace
 
 
+def select_decoder_guidance_indices(
+    total_steps: int,
+    *,
+    start_fraction: float,
+    guidance_steps: int,
+) -> list[int]:
+    """Равномерно выбрать поздние denoising-шаги, обязательно включая последний."""
+    if total_steps <= 0:
+        raise ValueError("Общее число denoising-шагов должно быть положительным")
+    if not 0.5 <= start_fraction < 1:
+        raise ValueError("Decoder denoising start fraction должна быть в диапазоне [0.5, 1)")
+    if guidance_steps <= 0:
+        raise ValueError("Число decoder denoising шагов должно быть положительным")
+
+    start_index = min(total_steps - 1, int(total_steps * start_fraction))
+    available_steps = total_steps - start_index
+    selected_count = min(guidance_steps, available_steps)
+    if selected_count == 1:
+        return [total_steps - 1]
+    if selected_count == available_steps:
+        return list(range(start_index, total_steps))
+    span = total_steps - 1 - start_index
+    return [
+        round(start_index + position * span / (selected_count - 1))
+        for position in range(selected_count)
+    ]
+
+
+def guide_denoising_latents_with_decoder(
+    latents: torch.Tensor,
+    model_output: torch.Tensor,
+    *,
+    sigma: torch.Tensor | float,
+    decode_fn: Callable[[torch.Tensor], torch.Tensor],
+    target_envelope: torch.Tensor,
+    active_length: int,
+    waveform_length: int,
+    gamma: float,
+    gradient_clip_norm: float,
+    max_relative_step: float,
+    decoder_context_frames: int = 64,
+    reference_active_length: int | None = None,
+    sigma_data: float = 1.0,
+    prediction_type: str = "v_prediction",
+    max_backtracking_steps: int = 3,
+) -> tuple[torch.Tensor, float, dict[str, float | int]]:
+    """Скорректировать noisy latent по точной waveform-loss его x0-прогноза.
+
+    Transformer остаётся вне autograd. Градиент проходит от короткого VAE
+    decode через аналитическую формулу predicted x0 только к текущему latent.
+    Коррекция ограничивается отдельно для каждой активной временной позиции.
+    """
+    if gamma <= 0:
+        raise ValueError("Decoder denoising guidance требует gamma > 0")
+    if latents.shape != model_output.shape:
+        raise ValueError("Латент и выход transformer должны иметь одинаковую форму")
+    if waveform_length <= 0:
+        raise ValueError("waveform_length должен быть положительным")
+    if decoder_context_frames < 0:
+        raise ValueError("decoder_context_frames не может быть отрицательным")
+    if not 1 <= active_length <= latents.shape[-1]:
+        raise ValueError("Некорректный active_length")
+    if not 0 < max_relative_step <= 1:
+        raise ValueError("max_relative_step должен быть в диапазоне (0, 1]")
+    if max_backtracking_steps < 0:
+        raise ValueError("max_backtracking_steps не может быть отрицательным")
+    if reference_active_length is None:
+        reference_active_length = active_length
+    if reference_active_length <= 0:
+        raise ValueError("reference_active_length должен быть положительным")
+
+    context_length = min(latents.shape[-1], active_length + decoder_context_frames)
+    working = latents.detach().float().requires_grad_(True)
+    fixed_output = model_output.detach().float()
+    duration_scale = max(1.0, active_length / reference_active_length)
+
+    def decode_envelope(values: torch.Tensor) -> torch.Tensor:
+        predicted_x0 = _x0_from_v_prediction(
+            values,
+            fixed_output,
+            sigma,
+            sigma_data=sigma_data,
+            prediction_type=prediction_type,
+        )
+        waveform = decode_fn(predicted_x0[:, :, :context_length].to(dtype=latents.dtype))
+        if waveform.ndim != 3 or waveform.shape[-1] < waveform_length:
+            raise ValueError("VAE decoder вернул слишком короткую waveform")
+        return waveform_rms_envelope(waveform[:, :, :waveform_length])
+
+    envelope = decode_envelope(working)
+    if not torch.isfinite(envelope).all():
+        raise FloatingPointError("Decoder denoising envelope содержит NaN/Inf")
+    target = resample_target_envelope(
+        target_envelope.to(latents.device, torch.float32), envelope.shape[-1]
+    )
+    loss = F.mse_loss(envelope, target.unsqueeze(0).expand_as(envelope))
+    if not torch.isfinite(loss):
+        raise FloatingPointError("Decoder denoising loss содержит NaN/Inf")
+    gradient = torch.autograd.grad(loss, working, only_inputs=True)[0].float()
+    if not torch.isfinite(gradient).all():
+        raise FloatingPointError("Decoder denoising gradient содержит NaN/Inf")
+    active_gradient = gradient[:, :, :active_length]
+    raw_gradient_norm = torch.linalg.vector_norm(active_gradient)
+    active_gradient = _clip_gradient_norm(active_gradient, gradient_clip_norm)
+
+    anchor = latents.detach().float()
+    anchor_active = anchor[:, :, :active_length]
+    anchor_frame_norm = torch.linalg.vector_norm(anchor_active, dim=1)
+    proposed_delta = -gamma * duration_scale * active_gradient
+    proposed_frame_norm = torch.linalg.vector_norm(proposed_delta, dim=1)
+    maximum_frame_norm = max_relative_step * anchor_frame_norm
+    frame_scale = torch.clamp(
+        maximum_frame_norm / proposed_frame_norm.clamp_min(1e-8),
+        max=1.0,
+    )
+    projected_delta = proposed_delta * frame_scale.unsqueeze(1)
+
+    accepted = False
+    accepted_scale = 0.0
+    loss_after = loss.detach()
+    corrected_fp32 = anchor
+    for backtracking_index in range(max_backtracking_steps + 1):
+        candidate_scale = 0.5**backtracking_index
+        candidate = anchor.clone()
+        candidate[:, :, :active_length] = anchor_active + candidate_scale * projected_delta
+        with torch.no_grad():
+            candidate_envelope = decode_envelope(candidate)
+            candidate_loss = F.mse_loss(
+                candidate_envelope,
+                target.unsqueeze(0).expand_as(candidate_envelope),
+            )
+        if not torch.isfinite(candidate_loss):
+            raise FloatingPointError("Decoder denoising candidate loss содержит NaN/Inf")
+        if candidate_loss < loss.detach():
+            corrected_fp32 = candidate
+            loss_after = candidate_loss
+            accepted = True
+            accepted_scale = candidate_scale
+            break
+
+    accepted_delta = accepted_scale * projected_delta
+    correction_norm = torch.linalg.vector_norm(accepted_delta)
+    active_latent_norm = torch.linalg.vector_norm(anchor_active).clamp_min(1e-8)
+    frame_relative = torch.linalg.vector_norm(accepted_delta, dim=1) / anchor_frame_norm.clamp_min(
+        1e-8
+    )
+    corrected = corrected_fp32.to(dtype=latents.dtype)
+    if not torch.isfinite(corrected).all():
+        raise FloatingPointError("Decoder denoising guidance создал NaN/Inf")
+    diagnostics: dict[str, float | int] = {
+        "gradient_norm": float(raw_gradient_norm.detach().cpu()),
+        "correction_norm": float(correction_norm.detach().cpu()),
+        "active_latent_norm": float(active_latent_norm.detach().cpu()),
+        "relative_correction": float((correction_norm / active_latent_norm).detach().cpu()),
+        "max_frame_relative_correction": float(frame_relative.max().detach().cpu()),
+        "decoder_context_frames": context_length - active_length,
+        "duration_scale": duration_scale,
+        "accepted": int(accepted),
+        "backtracking_scale": accepted_scale,
+        "loss_after": float(loss_after.detach().cpu()),
+    }
+    return corrected, float(loss.detach().cpu()), diagnostics
+
+
 def _prepare_conditions(
     pipe: Any,
     *,
@@ -605,11 +769,13 @@ def generate_sfx(
     envelope_probe: WaveformEnvelopeProbe | None = None,
     guidance_mode: str = "denoising",
     final_guidance_steps: int = 10,
+    decoder_guidance_start_fraction: float = 0.7,
     return_active_latents: bool = False,
 ) -> StableAudioGenerationResult:
     """Выполнить baseline (gamma=0) или Direct Latent Guidance.
 
-    ВАЖНО: VAE вызывается единожды, после полного цикла denoising.
+    В обычных режимах VAE вызывается после denoising. Экспериментальный
+    ``decoder_denoising`` дополнительно декодирует только выбранные x0-прогнозы.
     """
     if not 0 <= guidance_start_fraction < 1:
         raise ValueError("guidance_start_fraction должен быть в [0, 1)")
@@ -621,12 +787,17 @@ def generate_sfx(
         raise ValueError("Длительность и число шагов должны быть положительными")
     if guidance_reference_duration_seconds <= 0:
         raise ValueError("guidance_reference_duration_seconds должен быть положительным")
-    if guidance_mode not in {"denoising", "final", "decoder"}:
-        raise ValueError("guidance_mode должен быть 'denoising', 'final' или 'decoder'")
+    if guidance_mode not in {"denoising", "final", "decoder", "decoder_denoising"}:
+        raise ValueError(
+            "guidance_mode должен быть 'denoising', 'final', 'decoder' "
+            "или 'decoder_denoising'"
+        )
     if gamma > 0 and guidance_mode == "final" and envelope_probe is None:
         raise ValueError("Final guidance требует waveform-aware envelope probe")
     if final_guidance_steps <= 0:
         raise ValueError("final_guidance_steps должен быть положительным")
+    if not 0.5 <= decoder_guidance_start_fraction < 1:
+        raise ValueError("decoder_guidance_start_fraction должен быть в [0.5, 1)")
 
     device = torch.device("cuda")
     latents = initial_latents.detach().clone().to(device)
@@ -658,6 +829,16 @@ def generate_sfx(
     started_at = perf_counter()
     last_loss: float | None = None
     guidance_trace: list[dict[str, float | int]] = []
+    decoder_guidance_indices: set[int] = set()
+    if gamma > 0 and guidance_mode == "decoder_denoising":
+        pipe.vae.requires_grad_(False)
+        decoder_guidance_indices = set(
+            select_decoder_guidance_indices(
+                len(timesteps),
+                start_fraction=decoder_guidance_start_fraction,
+                guidance_steps=final_guidance_steps,
+            )
+        )
 
     for index, timestep in enumerate(timesteps):
         model_output = predict_noise_sequential_cfg(
@@ -695,6 +876,32 @@ def generate_sfx(
                     "step": index,
                     "sigma": float(pipe.scheduler.sigmas[pipe.scheduler.step_index]),
                     "loss_before": last_loss,
+                    **step_diagnostics,
+                }
+            )
+
+        if gamma > 0 and guidance_mode == "decoder_denoising" and index in decoder_guidance_indices:
+            latents, loss_before, step_diagnostics = guide_denoising_latents_with_decoder(
+                latents,
+                model_output,
+                sigma=pipe.scheduler.sigmas[pipe.scheduler.step_index],
+                decode_fn=lambda values: pipe.vae.decode(values).sample,
+                target_envelope=target_envelope,
+                active_length=active_length,
+                waveform_length=waveform_length,
+                gamma=gamma,
+                gradient_clip_norm=gradient_clip_norm,
+                max_relative_step=max_relative_step,
+                reference_active_length=reference_active_length,
+                sigma_data=float(pipe.scheduler.config.sigma_data),
+                prediction_type=str(pipe.scheduler.config.prediction_type),
+            )
+            last_loss = float(step_diagnostics["loss_after"])
+            guidance_trace.append(
+                {
+                    "step": index,
+                    "sigma": float(pipe.scheduler.sigmas[pipe.scheduler.step_index]),
+                    "loss_before": loss_before,
                     **step_diagnostics,
                 }
             )

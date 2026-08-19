@@ -29,12 +29,14 @@ from stable_audio_guidance import (
     _x0_from_v_prediction,
     active_latent_length,
     envelope_metrics,
+    guide_denoising_latents_with_decoder,
     guide_final_latents,
     guide_final_latents_with_decoder,
     guide_latents,
     latent_rms_envelope,
     predict_guidance_envelope,
     resample_target_envelope,
+    select_decoder_guidance_indices,
     predict_noise_sequential_cfg,
     waveform_rms_envelope,
 )
@@ -89,11 +91,24 @@ class StableAudioGuidanceTests(unittest.TestCase):
             final_guidance_steps=3,
             envelope_probe_path=Path("probe.safetensors"),
         )
+        validate_probe_guidance_mode(
+            probe_guidance_mode="decoder_denoising",
+            final_guidance_steps=3,
+            envelope_probe_path=Path("probe.safetensors"),
+            decoder_guidance_start_fraction=0.7,
+        )
         with self.assertRaisesRegex(ValueError, "диапазоне"):
             validate_probe_guidance_mode(
                 probe_guidance_mode="decoder",
                 final_guidance_steps=4,
                 envelope_probe_path=Path("probe.safetensors"),
+            )
+        with self.assertRaisesRegex(ValueError, "диапазоне"):
+            validate_probe_guidance_mode(
+                probe_guidance_mode="decoder_denoising",
+                final_guidance_steps=3,
+                envelope_probe_path=Path("probe.safetensors"),
+                decoder_guidance_start_fraction=0.49,
             )
 
     def test_envelope_probe_request_is_guarded(self) -> None:
@@ -463,6 +478,70 @@ class StableAudioGuidanceTests(unittest.TestCase):
         self.assertTrue(
             all(float(row["max_frame_relative_correction"]) <= 0.030001 for row in trace)
         )
+        self.assertTrue(torch.equal(corrected[:, :, 3:], latents[:, :, 3:]))
+
+    def test_decoder_denoising_indices_cover_late_window(self) -> None:
+        self.assertEqual(
+            select_decoder_guidance_indices(50, start_fraction=0.7, guidance_steps=3),
+            [35, 42, 49],
+        )
+        self.assertEqual(
+            select_decoder_guidance_indices(4, start_fraction=0.7, guidance_steps=3),
+            [2, 3],
+        )
+        self.assertEqual(
+            select_decoder_guidance_indices(50, start_fraction=0.7, guidance_steps=1),
+            [49],
+        )
+
+    def test_decoder_denoising_guidance_reduces_exact_x0_waveform_loss(self) -> None:
+        latents = torch.tensor(
+            [[[0.1, 0.5, 1.0, 0.7, 0.2], [0.3, 0.2, 0.1, 0.4, 0.6]]]
+        )
+        model_output = torch.zeros_like(latents)
+        target = torch.tensor([1.0, 0.5, 0.0])
+
+        def decode(values: torch.Tensor) -> torch.Tensor:
+            return values[:, :1].repeat_interleave(1024, dim=-1)
+
+        sigma = 0.5
+        before_x0 = _x0_from_v_prediction(
+            latents,
+            model_output,
+            sigma,
+            sigma_data=1.0,
+            prediction_type="v_prediction",
+        )
+        before = waveform_rms_envelope(decode(before_x0[:, :, :3]))[0]
+        target_resampled = resample_target_envelope(target, before.numel())
+        corrected, loss_before, diagnostics = guide_denoising_latents_with_decoder(
+            latents,
+            model_output,
+            sigma=sigma,
+            decode_fn=decode,
+            target_envelope=target,
+            active_length=3,
+            waveform_length=3072,
+            gamma=50.0,
+            gradient_clip_norm=1000.0,
+            max_relative_step=0.03,
+            decoder_context_frames=0,
+            reference_active_length=3,
+        )
+        after_x0 = _x0_from_v_prediction(
+            corrected,
+            model_output,
+            sigma,
+            sigma_data=1.0,
+            prediction_type="v_prediction",
+        )
+        after = waveform_rms_envelope(decode(after_x0[:, :, :3]))[0]
+        after_mse = envelope_metrics(target_resampled, after)["mse"]
+        self.assertLess(after_mse, envelope_metrics(target_resampled, before)["mse"])
+        self.assertAlmostEqual(loss_before, envelope_metrics(target_resampled, before)["mse"])
+        self.assertAlmostEqual(float(diagnostics["loss_after"]), after_mse)
+        self.assertEqual(diagnostics["accepted"], 1)
+        self.assertLessEqual(float(diagnostics["max_frame_relative_correction"]), 0.030001)
         self.assertTrue(torch.equal(corrected[:, :, 3:], latents[:, :, 3:]))
 
     def test_fp16_early_sigma_stays_finite(self) -> None:
