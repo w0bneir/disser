@@ -75,6 +75,8 @@ archive/audioldm/                 исторические эксперимен�
 run_stable_audio_experiments.py   основной безопасный runner
 run_dsp_baseline.py               CPU pitch/time/EQ-контроль
 evaluate_reference_variations.py единая CPU-оценка четырёх методов
+prepare_listening_test.py         сборка анонимного listening-пакета
+analyze_listening_test.py         раскрытие ключа после полной оценки
 dsp_baseline.py                   воспроизводимые DSP-преобразования
 sfx_metrics.py                    структура, спектр и non-copy метрики
 stable_audio_guidance.py          denoising и reference-latent методы
@@ -177,6 +179,10 @@ python run_stable_audio_experiments.py --config configs\reference_variations.jso
 VRAM/время и слепые оценки слушателей добавляются в итоговый протокол отдельно.
 Веб-интерфейс создаётся после того, как метод даст воспроизводимый результат на
 нескольких референсах и seed.
+
+Текущий пилотный listening-пакет собирается по протоколу
+`docs/LISTENING_PROTOCOL.md`. Ключ рандомизации хранится отдельно и не
+раскрывается до заполнения индивидуальной и пакетной таблиц.
 
 ## Данные и воспроизводимость
 
