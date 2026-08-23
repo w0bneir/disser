@@ -17,6 +17,7 @@ from run_stable_audio_experiments import (
     LATENT_DIAGNOSTICS_FILE,
     load_reference_for_analysis,
     pair_is_complete,
+    resolve_case_negative_prompt,
     resolve_experiment_selection,
     resolve_guidance_gamma,
     resolve_inference_steps,
@@ -76,6 +77,30 @@ class _ReferenceScheduler:
         del timesteps
         assert self.begin_index is not None
         return original_samples + noise * self.sigmas[self.begin_index]
+
+
+class ConfigPromptTests(unittest.TestCase):
+    def test_case_negative_prompt_overrides_global_and_falls_back(self) -> None:
+        config = {"negative_prompt": "global ambience"}
+        self.assertEqual(
+            resolve_case_negative_prompt(
+                config=config,
+                case={"negative_prompt": "multiple shots"},
+            ),
+            "multiple shots",
+        )
+        self.assertEqual(
+            resolve_case_negative_prompt(config=config, case={}),
+            "global ambience",
+        )
+        self.assertIsNone(resolve_case_negative_prompt(config={}, case={}))
+
+    def test_case_negative_prompt_rejects_blank_value(self) -> None:
+        with self.assertRaisesRegex(ValueError, "negative_prompt"):
+            resolve_case_negative_prompt(
+                config={"negative_prompt": "global"},
+                case={"negative_prompt": " "},
+            )
 
 
 class _LatentDistribution:

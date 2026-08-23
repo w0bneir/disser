@@ -11,9 +11,10 @@
   "negative_prompt": "music, melody, singing, speech, ambience, low quality, distortion, hiss",
   "cases": [
     {
-      "id": "metal_impact",
-      "reference_path": "references/metal_impact.wav",
-      "prompt": "single heavy metallic anvil strike, isolated dry cinematic foley sound effect, no ambience"
+      "id": "shot_sound",
+      "reference_path": "references/shot_sound.wav",
+      "prompt": "single firearm gunshot, sharp muzzle blast with a long natural reverberant decay tail, isolated sound effect, no additional shots, no music",
+      "negative_prompt": "multiple gunshots, automatic gunfire, burst fire, music, speech"
     },
     {
       "id": "wood_creak",
@@ -22,4 +23,3 @@
     }
   ]
 }
-

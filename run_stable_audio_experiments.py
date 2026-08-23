@@ -59,6 +59,20 @@ PAIR_OUTPUT_FILES = (
 LATENT_DIAGNOSTICS_FILE = "latent_diagnostics.npz"
 
 
+def resolve_case_negative_prompt(
+    *,
+    config: dict[str, Any],
+    case: dict[str, Any],
+) -> str | None:
+    """Разрешить case-specific negative prompt с fallback на общий конфиг."""
+    value = case.get("negative_prompt", config.get("negative_prompt"))
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("negative_prompt должен быть непустой строкой или null")
+    return value
+
+
 def read_config(path: Path) -> dict[str, Any]:
     with path.open("r", encoding="utf-8") as config_file:
         config = json.load(config_file)
@@ -83,6 +97,7 @@ def read_config(path: Path) -> dict[str, Any]:
             raise ValueError("Каждый пример должен иметь id, reference_path и prompt")
         if not Path(case["reference_path"]).is_file():
             raise FileNotFoundError(f"Не найден референс: {case['reference_path']}")
+        resolve_case_negative_prompt(config=config, case=case)
     return config
 
 
@@ -675,6 +690,7 @@ def run(
     completed_pairs = 0
 
     for case in cases:
+        case_negative_prompt = resolve_case_negative_prompt(config=config, case=case)
         waveform, reference_sample_rate, target = load_reference_for_analysis(
             case["reference_path"],
             analysis_sample_rate=analysis_sample_rate,
@@ -716,7 +732,7 @@ def run(
             baseline = generate_sfx(
                 pipe,
                 prompt=case["prompt"],
-                negative_prompt=config.get("negative_prompt"),
+                negative_prompt=case_negative_prompt,
                 duration_seconds=duration_seconds,
                 num_inference_steps=steps,
                 guidance_scale=float(config["cfg_scale"]),
@@ -736,7 +752,7 @@ def run(
             guided = generate_sfx(
                 pipe,
                 prompt=case["prompt"],
-                negative_prompt=config.get("negative_prompt"),
+                negative_prompt=case_negative_prompt,
                 duration_seconds=duration_seconds,
                 num_inference_steps=steps,
                 guidance_scale=float(config["cfg_scale"]),
@@ -839,6 +855,7 @@ def run(
                 "case_id": case["id"],
                 "reference_path": case["reference_path"],
                 "prompt": case["prompt"],
+                "negative_prompt": case_negative_prompt,
                 "seed": int(seed),
                 "duration_seconds": duration_seconds,
                 "analysis_sample_rate": reference_sample_rate,

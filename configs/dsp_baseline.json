@@ -10,8 +10,8 @@
   "eq_width_octaves": 1.5,
   "cases": [
     {
-      "id": "metal_impact",
-      "reference_path": "references/metal_impact.wav"
+      "id": "shot_sound",
+      "reference_path": "references/shot_sound.wav"
     },
     {
       "id": "wood_creak",
