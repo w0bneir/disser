@@ -22,6 +22,12 @@ smoke-test и неудачных попыток.
 | 2026-08-23 | `2026-08-23_shot_core_hybrid_compromise_v3` | одноточечная калибровка residual mix `0.44`, 1 эксперт | Идентичность `4/5`, естественность и яркость `5/5`, лишние выстрелы `1/5`, но слышимое полезное отличие `2/5` и полезность `3/5`. Заранее заданный критерий не выполнен; аддитивная residual-ветка закрыта. |
 | 2026-08-23 | `2026-08-23_shot_spectral_tail_morph_v1` | magnitude-only spectral tail morph, CPU gate | Первые 90% энергии (`298.3 мс`) защищены, но residual позднего хвоста составил лишь `-22.6 dB`, ниже уже установленного неслышимого уровня. Candidate отклонён до слухового теста. |
 | 2026-08-23 | `2026-08-23_shot_spectral_tail_phase_v2` | magnitude + phase spectral tail morph, phase mix `0.45` | Несмотря на residual позднего хвоста `-8.57 dB`, слушатель прекратил оценку без баллов: candidate перцептивно идентичен reference. Phase/magnitude post-processing закрыт. |
+| 2026-08-23 | `2026-08-23_sa3_shot_smoke_01` | Stable Audio 3 native audio-to-audio и SAME codec | Codec-only сохранил событие, но фактически повторил reference с изменённым шумовым хвостом. Зашумлённый candidate превратился в продолжительный широкополосный артефакт. |
+| 2026-08-23 | `2026-08-23_sa3_same_tangent_listening_v1` | слепая SAME latent-neighbourhood проверка, 3 candidate | Все три candidate воспринимаются как одинаковые копии reference с металлическими артефактами. Рабочая область между copy и повреждением не найдена; Stable Audio 3 закрыт как основной метод. |
+| 2026-08-23 | `2026-08-23_audiox_shot_smoke_01` | AudioX guarded smoke, 2 шага | Полный reference→conditioning→denoising→decoder тракт прошёл без OOM. Peak CUDA allocated/reserved `3685/4784 MiB`; создан корректный codec round-trip и технический candidate. |
+| 2026-08-23 | `2026-08-23_audiox_shot_50step_01` | AudioX, reference + init latent, noise `0.10`, CFG `3`, seed `17`, 50 шагов | Технически корректен и без лишнего выстрела, но слуховой gate провален: codec испортил тембр, candidate остался тем же выстрелом без полезного отличия и с артефактами. Off-the-shelf AudioX закрыт. |
+| 2026-08-23 | `2026-08-23_shot_masked_sde_smoke_01` | Stable Audio Open masked Reference SDEdit, 4 шага | Новый пошаговый anchor-маршрут прошёл без OOM; peak VRAM `4312 MiB`, режим и маска подтверждены metadata. Smoke используется только как технический gate. |
+| 2026-08-23 | `2026-08-23_shot_masked_sde_50step_01` | masked Reference SDEdit, strength `0.30`, anchor/fade `300/140 мс`, seed `17`, 50 шагов | Одна допущенная пара создана за 15 эффективных шагов с peak VRAM `4312 MiB`. WAV корректен, не клиппирован и не является копией reference/baseline; слуховой вывод ожидается. |
 
 ## Текущая контрольная точка
 
@@ -106,6 +112,23 @@ Magnitude-only морфинг позднего хвоста сохранил ф�
 
 Слуховая проверка показала, что даже этот уровень фазовой микроструктуры
 перцептивно неотличим от reference. Ветка постобработки generative-source
-закрыта полностью. Основная следующая модель — Stable Audio 3 Small-SFX с
-нативным audio-to-audio conditioning. SpecSinGAN оставлен резервным
-single-example методом, если новая модель не даст нужного компромисса.
+закрыта полностью.
+
+Stable Audio 3 не исправил это ограничение. Native audio-to-audio разрушил
+событие, а консервативное движение в SAME latent-neighbourhood дало три копии с
+металлическими артефактами. Объективно высокое совпадение огибающей снова не
+соответствовало полезному слуховому результату, поэтому дополнительные sweeps
+не выполняются.
+
+AudioX технически прошёл CPU load, двухшаговый smoke и один 50-шаговый прогон с
+peak reserved VRAM `4784 MiB`, но слуховой gate провален. Codec испортил тембр,
+candidate не дал полезного отличия и добавил артефакты. Отсутствие лишнего
+выстрела не компенсирует эти дефекты; дополнительные AudioX seed и noise не
+запускаются.
+
+Основная модель снова Stable Audio Open 1.0, но глобальный SDEdit не
+повторяется. Следующая причинная проверка — masked Reference SDEdit: первые
+`300 мс` reference latent удерживаются после каждого denoising step, затем
+следует `140 мс` плавного перехода, а тело и хвост остаются вариативными. Это
+проверяет сохранение атаки внутри генеративной траектории, а не post-processing
+или очередной подбор strength.

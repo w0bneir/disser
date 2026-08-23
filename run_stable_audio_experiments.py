@@ -261,9 +261,13 @@ def validate_reference_sde_request(
     reference_sde_strength: float | None,
     requested_gamma: float | None,
     max_new_pairs: int | None,
+    anchor_prefix_ms: float | None = None,
+    anchor_fade_ms: float = 0.0,
 ) -> None:
     """Ограничить новый reference-init режим одним изолированным GPU-опытом."""
     if reference_sde_strength is None:
+        if anchor_prefix_ms is not None or anchor_fade_ms != 0:
+            raise ValueError("Reference anchor требует --reference-sde-strength")
         return
     if not np.isfinite(reference_sde_strength) or not 0 < reference_sde_strength <= 1:
         raise ValueError("--reference-sde-strength должен быть в диапазоне (0, 1]")
@@ -274,6 +278,14 @@ def validate_reference_sde_request(
         )
     if max_new_pairs != 1:
         raise ValueError("--reference-sde-strength требует --max-new-pairs 1")
+    if anchor_prefix_ms is None:
+        if anchor_fade_ms != 0:
+            raise ValueError("--reference-sde-fade-ms требует --reference-sde-anchor-ms")
+        return
+    if not np.isfinite(anchor_prefix_ms) or not 0 < anchor_prefix_ms <= 5000:
+        raise ValueError("--reference-sde-anchor-ms должен быть в диапазоне (0, 5000]")
+    if not np.isfinite(anchor_fade_ms) or not 0 <= anchor_fade_ms <= 5000:
+        raise ValueError("--reference-sde-fade-ms должен быть в диапазоне [0, 5000]")
 
 
 def load_reference_for_analysis(
@@ -587,6 +599,8 @@ def run(
     decoder_guidance_start_fraction: float,
     decoder_correlation_weight: float,
     reference_sde_strength: float | None,
+    reference_sde_anchor_ms: float | None,
+    reference_sde_fade_ms: float,
     minimum_vram_gb: float,
     minimum_free_vram_gb: float,
     allow_unsafe_vram: bool,
@@ -613,6 +627,8 @@ def run(
         reference_sde_strength=reference_sde_strength,
         requested_gamma=requested_gamma,
         max_new_pairs=max_new_pairs,
+        anchor_prefix_ms=reference_sde_anchor_ms,
+        anchor_fade_ms=reference_sde_fade_ms,
     )
     envelope_probe = None
     if envelope_probe_path is not None:
@@ -683,9 +699,16 @@ def run(
     if reference_sde_strength is None:
         print(f"[+] Параметры guidance: gamma={guidance_gamma:g}")
     else:
+        anchor_description = ""
+        if reference_sde_anchor_ms is not None:
+            anchor_description = (
+                f"; anchor={reference_sde_anchor_ms:g} мс"
+                f" + fade={reference_sde_fade_ms:g} мс"
+            )
         print(
             "[+] Reference SDEdit: "
-            f"strength={reference_sde_strength:g}; gradient guidance отключён"
+            f"strength={reference_sde_strength:g}{anchor_description}; "
+            "gradient guidance отключён"
         )
     completed_pairs = 0
 
@@ -760,6 +783,8 @@ def run(
                 initial_latents=initial_latents,
                 reference_latents=reference_latents,
                 reference_noise_strength=reference_sde_strength,
+                reference_anchor_prefix_ms=reference_sde_anchor_ms,
+                reference_anchor_fade_ms=reference_sde_fade_ms,
                 target_envelope=target,
                 gamma=guided_gamma,
                 gradient_clip_norm=float(config["gradient_clip_norm"]),
@@ -865,7 +890,11 @@ def run(
                 "cfg_scale": float(config["cfg_scale"]),
                 "gamma": guided_gamma,
                 "comparison_mode": (
-                    "reference_sde" if reference_sde_strength is not None else "latent_guidance"
+                    "reference_sde_masked"
+                    if reference_sde_anchor_ms is not None
+                    else "reference_sde"
+                    if reference_sde_strength is not None
+                    else "latent_guidance"
                 ),
                 "initialization": {
                     "baseline": baseline.initialization,
@@ -1065,6 +1094,21 @@ def parse_args() -> argparse.Namespace:
             "диапазон (0, 1], требует --max-new-pairs 1 и не совмещается с --gamma."
         ),
     )
+    parser.add_argument(
+        "--reference-sde-anchor-ms",
+        type=float,
+        default=None,
+        help=(
+            "Сохранить начало reference trajectory на каждом шаге masked SDEdit; "
+            "требует --reference-sde-strength."
+        ),
+    )
+    parser.add_argument(
+        "--reference-sde-fade-ms",
+        type=float,
+        default=0.0,
+        help="Длительность плавного перехода после защищённой атаки, мс.",
+    )
     parser.add_argument("--minimum-vram-gb", type=float, default=MINIMUM_GUIDANCE_VRAM_GB)
     parser.add_argument("--minimum-free-vram-gb", type=float, default=MINIMUM_GUIDANCE_FREE_VRAM_GB)
     parser.add_argument(
@@ -1098,6 +1142,8 @@ if __name__ == "__main__":
             decoder_guidance_start_fraction=arguments.decoder_guidance_start_fraction,
             decoder_correlation_weight=arguments.decoder_correlation_weight,
             reference_sde_strength=arguments.reference_sde_strength,
+            reference_sde_anchor_ms=arguments.reference_sde_anchor_ms,
+            reference_sde_fade_ms=arguments.reference_sde_fade_ms,
             minimum_vram_gb=arguments.minimum_vram_gb,
             minimum_free_vram_gb=arguments.minimum_free_vram_gb,
             allow_unsafe_vram=arguments.allow_unsafe_vram,

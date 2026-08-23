@@ -1,0 +1,15 @@
+# Inference-only overlay for the audited AudioX source snapshot.
+# PyTorch, torchaudio, torchvision, transformers and safetensors are inherited
+# from the verified sfx_gen_5070 CUDA 12.8 environment and are not changed here.
+alias-free-torch==0.0.6
+decord==0.6.0
+descript-audio-codec==1.0.0
+einops==0.8.2
+einops_exts==0.0.4
+hf_xet==1.2.0
+k-diffusion==0.1.1
+local-attention==1.8.6
+PyWavelets==1.4.1
+sentencepiece==0.1.99
+vector-quantize-pytorch==1.9.14
+x-transformers==1.26.6

@@ -910,6 +910,78 @@ def prepare_reference_sde_latents(
     return noisy, start_index, sigma
 
 
+def build_reference_anchor_mask(
+    reference_latents: torch.Tensor,
+    *,
+    active_length: int,
+    sample_rate: int,
+    hop_length: int,
+    prefix_ms: float,
+    fade_ms: float,
+) -> tuple[torch.Tensor, int, int]:
+    """Создать плавную временную маску для сохранения атаки референса.
+
+    Единица удерживает forward-noised reference trajectory, ноль оставляет
+    denoising свободным. Маска имеет один канал и broadcast-ится на все latent-
+    каналы, чтобы не разрушать их совместную структуру.
+    """
+    if reference_latents.ndim != 3:
+        raise ValueError("Reference latents должны иметь форму [batch, channels, time]")
+    if not 1 <= active_length <= reference_latents.shape[-1]:
+        raise ValueError("active_length не совпадает с временной длиной reference latent")
+    if sample_rate <= 0 or hop_length <= 0:
+        raise ValueError("sample_rate и hop_length должны быть положительными")
+    if not np.isfinite(prefix_ms) or prefix_ms <= 0:
+        raise ValueError("prefix_ms должен быть положительным конечным числом")
+    if not np.isfinite(fade_ms) or fade_ms < 0:
+        raise ValueError("fade_ms должен быть неотрицательным конечным числом")
+
+    frames_per_ms = sample_rate / (1000.0 * hop_length)
+    prefix_frames = max(1, ceil(prefix_ms * frames_per_ms))
+    fade_frames = max(0, ceil(fade_ms * frames_per_ms))
+    if prefix_frames >= active_length:
+        raise ValueError(
+            "Защищённая атака занимает весь активный latent; "
+            "уменьшите --reference-sde-anchor-ms"
+        )
+
+    mask = torch.zeros(
+        (reference_latents.shape[0], 1, reference_latents.shape[-1]),
+        device=reference_latents.device,
+        dtype=reference_latents.dtype,
+    )
+    mask[:, :, :prefix_frames] = 1
+    transition_frames = min(fade_frames, active_length - prefix_frames)
+    if transition_frames > 0:
+        phase = torch.arange(
+            1,
+            transition_frames + 1,
+            device=mask.device,
+            dtype=torch.float32,
+        ) / (transition_frames + 1)
+        cosine_fade = 0.5 * (1.0 + torch.cos(torch.pi * phase))
+        mask[:, :, prefix_frames : prefix_frames + transition_frames] = cosine_fade.to(
+            dtype=mask.dtype
+        )
+    return mask, prefix_frames, transition_frames
+
+
+def apply_reference_anchor(
+    candidate_latents: torch.Tensor,
+    reference_state: torch.Tensor,
+    anchor_mask: torch.Tensor,
+) -> torch.Tensor:
+    """Спроецировать защищённую область на состояние reference trajectory."""
+    if candidate_latents.shape != reference_state.shape:
+        raise ValueError("Candidate и reference state должны иметь одинаковую форму")
+    expected_mask_shape = (candidate_latents.shape[0], 1, candidate_latents.shape[-1])
+    if tuple(anchor_mask.shape) != expected_mask_shape:
+        raise ValueError(f"Anchor mask должна иметь форму {expected_mask_shape}")
+    if not torch.isfinite(anchor_mask).all() or torch.any(anchor_mask < 0) or torch.any(anchor_mask > 1):
+        raise ValueError("Anchor mask должна содержать конечные значения в [0, 1]")
+    return candidate_latents * (1 - anchor_mask) + reference_state * anchor_mask
+
+
 def generate_sfx(
     pipe: Any,
     *,
@@ -922,6 +994,8 @@ def generate_sfx(
     initial_latents: torch.Tensor,
     reference_latents: torch.Tensor | None = None,
     reference_noise_strength: float | None = None,
+    reference_anchor_prefix_ms: float | None = None,
+    reference_anchor_fade_ms: float = 0.0,
     target_envelope: torch.Tensor | None = None,
     gamma: float = 0.0,
     gradient_clip_norm: float = 0.05,
@@ -950,6 +1024,10 @@ def generate_sfx(
         raise ValueError(
             "reference_latents и reference_noise_strength должны задаваться вместе"
         )
+    if reference_anchor_prefix_ms is not None and reference_latents is None:
+        raise ValueError("Reference anchor требует reference_latents")
+    if reference_anchor_prefix_ms is None and reference_anchor_fade_ms != 0:
+        raise ValueError("reference_anchor_fade_ms требует reference_anchor_prefix_ms")
     if reference_latents is not None and gamma > 0:
         raise ValueError(
             "Reference SDEdit сначала проверяется изолированно и не совмещается с gradient guidance"
@@ -987,11 +1065,18 @@ def generate_sfx(
         "effective_inference_steps": int(timesteps.numel()),
         "initial_sigma": float(pipe.scheduler.sigmas[0]),
     }
+    reference_on_device: torch.Tensor | None = None
+    reference_raw_noise: torch.Tensor | None = None
+    reference_anchor_mask: torch.Tensor | None = None
     if reference_latents is not None:
         reference_on_device = reference_latents.detach().to(
             device=device,
             dtype=latents.dtype,
         )
+        init_noise_sigma = float(pipe.scheduler.init_noise_sigma)
+        if not np.isfinite(init_noise_sigma) or init_noise_sigma <= 0:
+            raise ValueError("Scheduler init_noise_sigma должен быть положительным")
+        reference_raw_noise = latents / init_noise_sigma
         latents, start_index, initial_sigma = prepare_reference_sde_latents(
             pipe.scheduler,
             reference_latents=reference_on_device,
@@ -1007,6 +1092,24 @@ def generate_sfx(
             "effective_inference_steps": int(timesteps.numel()),
             "initial_sigma": initial_sigma,
         }
+        if reference_anchor_prefix_ms is not None:
+            reference_anchor_mask, prefix_frames, fade_frames = build_reference_anchor_mask(
+                reference_on_device,
+                active_length=active_length,
+                sample_rate=int(pipe.vae.config.sampling_rate),
+                hop_length=int(pipe.vae.hop_length),
+                prefix_ms=float(reference_anchor_prefix_ms),
+                fade_ms=float(reference_anchor_fade_ms),
+            )
+            initialization.update(
+                {
+                    "mode": "reference_sde_masked",
+                    "anchor_prefix_ms": float(reference_anchor_prefix_ms),
+                    "anchor_fade_ms": float(reference_anchor_fade_ms),
+                    "anchor_prefix_frames": prefix_frames,
+                    "anchor_fade_frames": fade_frames,
+                }
+            )
     text_duration, global_duration, do_cfg = _prepare_conditions(
         pipe,
         prompt=prompt,
@@ -1115,6 +1218,19 @@ def generate_sfx(
             latents,
             generator=scheduler_generator,
         ).prev_sample
+        if reference_anchor_mask is not None:
+            if reference_on_device is None or reference_raw_noise is None:
+                raise AssertionError("Reference anchor был создан без reference trajectory")
+            reference_state = pipe.scheduler.add_noise(
+                reference_on_device,
+                reference_raw_noise,
+                timestep.reshape(1),
+            )
+            latents = apply_reference_anchor(
+                latents,
+                reference_state,
+                reference_anchor_mask,
+            )
         if not torch.isfinite(latents).all():
             raise FloatingPointError(f"NaN/Inf после шага scheduler #{index}; запись WAV отменена")
 

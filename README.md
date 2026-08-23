@@ -16,19 +16,35 @@
 
 ## Текущий метод
 
-Ветка Stable Audio Open / Reference SDEdit завершена как абляция. На
-`wood_creak` она дала предварительно положительный слуховой результат, но на
-валидном `shot_sound` не нашла рабочей области между точной копией и дрейфом
-идентичности. Аддитивный residual и spectral magnitude/phase post-processing
-тоже остановлены по заранее заданному правилу.
+Основной черновик — **prompt-free masked acoustic tokens на VampNet**. Референс
+кодируется в 14 дискретных акустических codebook-ов. Три нижних codebook-а,
+несущие основной каркас события, сохраняются; верхние пересэмплируются с
+периодическими временными якорями и защищённой атакой. Текстовый промпт не нужен.
 
-Следующий основной кандидат — **Stable Audio 3 Small-SFX** с нативным
-audio-to-audio conditioning и новым semantic-acoustic autoencoder. Он будет
-установлен в отдельное окружение после фиксации текущей контрольной точки.
-Резервный single-example маршрут — SpecSinGAN. Обоснование выбора и безопасные
-gate описаны в [docs/NEXT_MODEL_EVALUATION.md](docs/NEXT_MODEL_EVALUATION.md).
+Stable Audio Open 1.0 остаётся исследовательским baseline. Глобальный Reference
+SDEdit дал положительный слуховой результат на `wood_creak`, но разрушал
+идентичность импульсного `shot_sound`. Masked Reference SDEdit также не прошёл
+слуховой gate: атака частично терялась, а результат воспринимался как морфинг.
+
+Stable Audio 3 Small-SFX также завершён как отрицательная абляция. Нативный
+audio-to-audio разрушал импульсный выстрел, а локальные SAME-latent изменения
+давали копии reference с металлическими артефактами.
+
+AudioX прошёл технический GPU gate, но закрыт после слуховой проверки: codec
+испортил тембр, 50-шаговый candidate воспринимался как тот же выстрел без
+полезного отличия и с артефактами. Код и результаты сохранены как отрицательная
+абляция. Stable Audio 3 и AudioX не являются текущими генеративными маршрутами.
 
 ## Текущая контрольная точка
+
+Prompt-free draft v1 на `shot_sound` создал три вариации одинаковой длительности
+без изменения нижних трёх codebook-ов. Изменилось 52,3–52,7% всех токенов,
+Envelope Pearson с reference составил 0,9967–0,9972, а попарная waveform-
+корреляция вариаций — 0,656–0,713. После загрузки модели один дубль создаётся за
+0,33–0,52 с; пик VRAM — 3682 MiB. Это технический, а не перцептивный успех:
+пакет должен пройти слуховую проверку идентичности, естественности и полезной
+вариативности. Метод и команды зафиксированы в
+[docs/VAMPNET_DRAFT.md](docs/VAMPNET_DRAFT.md).
 
 На `wood_creak` и трёх seed Reference SDEdit улучшил Pearson относительно
 paired text-only во всех случаях: `0.1257 → 0.6602`, `-0.1176 → 0.5180` и
@@ -36,10 +52,12 @@ paired text-only во всех случаях: `0.1257 → 0.6602`, `-0.1176 →
 `0.0525`. Результаты не являются линейными копиями и сохраняют двухчастную
 структуру с поздним акцентом около 2.6–2.8 с.
 
-Перенос на `shot_sound` показал, что высокий Envelope Pearson не гарантирует
+Перенос глобального SDEdit на `shot_sound` показал, что высокий Envelope Pearson не гарантирует
 перцептивную идентичность. Global SDEdit получил identity `2/5`, а
 reference-preserving post-processing либо оставался копией, либо снижал
-identity до `3/5`. Поэтому прежняя реализация не считается основным методом.
+identity до `3/5`. Поэтому прежняя глобальная реализация не считается основным
+методом. Masked SDEdit проверял отдельную причинную гипотезу сохранения атаки
+внутри denoising, но слуховой gate её не подтвердил.
 
 Зафиксированный DSP v1 является сильным контролем: на трёх wood-creak
 вариациях медианный Envelope Pearson равен `0.8273`, у Reference SDEdit —
@@ -69,6 +87,8 @@ tools/                            preflight, мониторинг и служе�
 results/                          локальные артефакты запусков, не входят в Git
 archive/audioldm/                 исторические эксперименты AudioLDM
 run_stable_audio_experiments.py   основной безопасный runner
+run_audiox_experiments.py         изолированный AudioX preflight/smoke runner
+run_vampnet_reference_variations.py prompt-free token runner и demo package
 run_dsp_baseline.py               CPU pitch/time/EQ-контроль
 evaluate_reference_variations.py единая CPU-оценка четырёх методов
 prepare_listening_test.py         сборка анонимного listening-пакета
@@ -77,8 +97,14 @@ dsp_baseline.py                   воспроизводимые DSP-преоб�
 sfx_metrics.py                    структура, спектр и non-copy метрики
 stable_audio_guidance.py          denoising и reference-latent методы
 stable_audio_probe.py             диагностический text-only probe
+vampnet_reference_variations.py   WAV, token-mask и технические gates
 test_*.py                         CPU-модульные тесты
 ```
+
+Код и кэши сторонних моделей находятся в игнорируемом `artifacts/` и не входят
+в Git. VampNet запускается из отдельного `artifacts/vampnet_env`, не меняя
+основное conda-окружение. Зафиксированные inference-зависимости AudioX
+перечислены в `requirements/audiox-inference.txt`.
 
 ## Окружение RTX 5070
 
@@ -143,23 +169,62 @@ python evaluate_reference_variations.py --case-id wood_creak --reference referen
 Создаются `file_metrics.csv`, сводки по методам и разнообразию, а также общий
 график RMS-огибающих. Все сигналы анализируются при 44,1 кГц.
 
-## Безопасный запуск Reference SDEdit
+## Prompt-free VampNet draft
+
+После codec gate и однофайлового smoke зафиксированный пакет создаётся так:
+
+```bat
+artifacts\vampnet_env\Scripts\python.exe run_vampnet_reference_variations.py --generate --reference references\shot_sound.wav --seeds 17 42 2026 --upper-codebook-mask 3 --periodic-prompt 7 --attack-ms 80 --temperature 0.9 --sampling-steps 12 --results-dir results\YYYY-MM-DD_vampnet_draft
+```
+
+В каталоге результата создаются исходный mono reference, codec round-trip, WAV-
+вариации, token diagnostics, полный JSON-отчёт и автономная страница
+`demo.html`. Предохранитель VRAM остаётся 12000/10000 MiB. Полная методика и
+ограничения описаны в [docs/VAMPNET_DRAFT.md](docs/VAMPNET_DRAFT.md).
+
+## Архивный masked Reference SDEdit
 
 Любой новый маршрут сначала проверяется четырёхшаговым smoke-test одной пары:
 
 ```bat
-python run_stable_audio_experiments.py --config configs\reference_variations.json --smoke-test --case-id wood_creak --seed 42 --reference-sde-strength 0.30 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\YYYY-MM-DD_wood_reference_sde_smoke_01
+python run_stable_audio_experiments.py --config configs\reference_variations.json --smoke-test --case-id shot_sound --seed 17 --reference-sde-strength 0.30 --reference-sde-anchor-ms 300 --reference-sde-fade-ms 140 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\YYYY-MM-DD_shot_masked_sde_smoke_01
 ```
 
 Только после успешного smoke-test запускается одна 50-шаговая пара:
 
 ```bat
-python run_stable_audio_experiments.py --config configs\reference_variations.json --num-inference-steps 50 --case-id wood_creak --seed 42 --reference-sde-strength 0.30 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\YYYY-MM-DD_wood_reference_sde_50step_01
+python run_stable_audio_experiments.py --config configs\reference_variations.json --num-inference-steps 50 --case-id shot_sound --seed 17 --reference-sde-strength 0.30 --reference-sde-anchor-ms 300 --reference-sde-fade-ms 140 --export-latent-diagnostics --max-new-pairs 1 --cooldown-seconds 20 --results-dir results\YYYY-MM-DD_shot_masked_sde_50step_01
 ```
 
 Для продолжения прерванной серии используется тот же каталог и `--resume`.
 Одновременный запуск нескольких генераций запрещён. Внешний монитор VRAM
 рекомендуется оставлять включённым на весь GPU-прогон.
+
+## Архивный gate AudioX
+
+AudioX не устанавливается в рабочее `sfx_gen_5070`. Локальное overlay-окружение
+находится в `artifacts/audiox_env`. До первого smoke выполняется только:
+
+```bat
+artifacts\audiox_env\Scripts\python.exe run_audiox_experiments.py --preflight-only
+```
+
+После успешного preflight разрешён один двухшаговый smoke:
+
+```bat
+artifacts\audiox_env\Scripts\python.exe run_audiox_experiments.py --smoke-test --reference references\shot_sound.wav --seed 17 --init-noise-level 0.10 --cfg-scale 3 --results-dir results\YYYY-MM-DD_audiox_shot_smoke_01
+```
+
+Успешный metadata smoke открывает ровно один 50-шаговый full-test с теми же
+seed, noise и CFG:
+
+```bat
+artifacts\audiox_env\Scripts\python.exe run_audiox_experiments.py --full-test --smoke-results-dir results\YYYY-MM-DD_audiox_shot_smoke_01 --reference references\shot_sound.wav --seed 17 --init-noise-level 0.10 --cfg-scale 3 --results-dir results\YYYY-MM-DD_audiox_shot_50step_01
+```
+
+Слуховой gate не пройден: codec неприемлемо изменил тембр, candidate не дал
+полезного отличия и содержал артефакты. Новые AudioX seed и parameter sweeps не
+запускаются. Штатный AudioX Gradio runner на RTX 5070 не используется.
 
 ## Что считается результатом исследования
 

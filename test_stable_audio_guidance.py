@@ -30,6 +30,8 @@ from run_stable_audio_experiments import (
 from stable_audio_guidance import (
     _x0_from_v_prediction,
     active_latent_length,
+    apply_reference_anchor,
+    build_reference_anchor_mask,
     encode_reference_audio_latents,
     envelope_metrics,
     envelope_shape_loss,
@@ -164,6 +166,8 @@ class StableAudioGuidanceTests(unittest.TestCase):
             reference_sde_strength=0.3,
             requested_gamma=None,
             max_new_pairs=1,
+            anchor_prefix_ms=300.0,
+            anchor_fade_ms=140.0,
         )
         with self.assertRaisesRegex(ValueError, "диапазоне"):
             validate_reference_sde_request(
@@ -183,6 +187,39 @@ class StableAudioGuidanceTests(unittest.TestCase):
                 requested_gamma=None,
                 max_new_pairs=None,
             )
+        with self.assertRaisesRegex(ValueError, "требует --reference-sde-strength"):
+            validate_reference_sde_request(
+                reference_sde_strength=None,
+                requested_gamma=None,
+                max_new_pairs=1,
+                anchor_prefix_ms=300.0,
+            )
+
+    def test_reference_anchor_mask_preserves_prefix_and_fades_smoothly(self) -> None:
+        reference = torch.zeros(1, 4, 12)
+        mask, prefix_frames, fade_frames = build_reference_anchor_mask(
+            reference,
+            active_length=10,
+            sample_rate=1000,
+            hop_length=100,
+            prefix_ms=300.0,
+            fade_ms=400.0,
+        )
+        self.assertEqual(prefix_frames, 3)
+        self.assertEqual(fade_frames, 4)
+        self.assertTrue(torch.equal(mask[0, 0, :3], torch.ones(3)))
+        self.assertTrue(torch.all(mask[0, 0, 3:7] < 1))
+        self.assertTrue(torch.all(mask[0, 0, 3:7] > 0))
+        self.assertTrue(torch.all(mask[0, 0, 3:6] > mask[0, 0, 4:7]))
+        self.assertTrue(torch.equal(mask[0, 0, 7:], torch.zeros(5)))
+
+    def test_reference_anchor_blends_only_protected_region(self) -> None:
+        candidate = torch.zeros(1, 2, 4)
+        reference = torch.full_like(candidate, 2.0)
+        mask = torch.tensor([[[1.0, 0.5, 0.0, 0.0]]])
+        anchored = apply_reference_anchor(candidate, reference, mask)
+        expected = torch.tensor([[[2.0, 1.0, 0.0, 0.0], [2.0, 1.0, 0.0, 0.0]]])
+        self.assertTrue(torch.equal(anchored, expected))
 
     def test_reference_sde_schedule_has_controlled_tail(self) -> None:
         self.assertEqual(reference_sde_start_index(50, 0.3), 35)
