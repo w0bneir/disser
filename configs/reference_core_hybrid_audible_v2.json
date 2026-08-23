@@ -1,0 +1,14 @@
+{
+  "protocol_id": "reference_core_hybrid_audibility_v2",
+  "reference_path": "references/shot_sound.wav",
+  "generated_path": "results/2026-08-23_shot_strength020_50step_01/shot_sound/seed_17/guided.wav",
+  "core_ms": 120.0,
+  "transition_ms": 80.0,
+  "envelope_window_ms": 20.0,
+  "local_gain_min": 0.5,
+  "local_gain_max": 2.0,
+  "residual_peak_multiple": 3.0,
+  "residual_mixes": [0.58, 0.82],
+  "candidate_prefix": "A",
+  "randomization_seed": 20260824
+}

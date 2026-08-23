@@ -1,0 +1,15 @@
+{
+  "protocol_id": "spectral_tail_morph_v1",
+  "reference_path": "references/shot_sound.wav",
+  "generated_path": "results/2026-08-23_shot_strength020_50step_01/shot_sound/seed_17/guided.wav",
+  "candidate_id": "S01",
+  "protected_energy_quantile": 0.90,
+  "transition_ms": 100.0,
+  "n_fft": 2048,
+  "hop_length": 512,
+  "frequency_smoothing_bins": 9,
+  "time_smoothing_frames": 9,
+  "max_modulation_db": 6.0,
+  "modulation_depth": 1.0,
+  "phase_mix": 0.0
+}
