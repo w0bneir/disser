@@ -62,7 +62,8 @@ python -m unittest -v `
   test_take_discriminability_gate.py `
   test_analyze_take_discriminability_ratings.py `
   test_perceptual_variation_synthesis.py `
-  test_perceptual_variation_draft.py
+  test_perceptual_variation_draft.py `
+  test_analyze_perceptual_variation_ratings.py
 
 python run_perceptual_variation_draft.py `
   --input-dir references\group_1 `
@@ -70,6 +71,11 @@ python run_perceptual_variation_draft.py `
   --events 8 `
   --interval-ms 1200 `
   --results-dir results\YYYY-MM-DD_perceptual_variation_draft_v0_01
+
+python analyze_perceptual_variation_ratings.py `
+  --draft-dir results\YYYY-MM-DD_perceptual_variation_draft_v0_01 `
+  --ratings C:\path\to\perceptual_variation_ratings.json `
+  --output-dir results\YYYY-MM-DD_perceptual_variation_analysis_v0_01
 
 python run_natural_pool_pilot.py `
   --input-dir references\group_1 `
@@ -167,6 +173,9 @@ REAPER, а точное происхождение микрофонных сло
 - `test_perceptual_variation_synthesis.py` и
   `test_perceptual_variation_draft.py` — unit и end-to-end проверки нового
   метода;
+- `analyze_perceptual_variation_ratings.py` и
+  `test_analyze_perceptual_variation_ratings.py` — строгое раскрытие synthesis
+  gate и проверка его критерия успеха;
 - `sfx_pool_optimizer.py` — анализ, расстояния, выбор пула, scheduler и rendering;
 - `run_natural_pool_pilot.py` — воспроизводимый анализ и слепой пилот;
 - `test_sfx_pool_optimizer.py` — автоматические проверки активного метода;
