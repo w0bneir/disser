@@ -67,6 +67,18 @@ python run_natural_pool_pilot.py `
   --results-dir results\YYYY-MM-DD_natural_pool_pilot_01
 ```
 
+Если sequence-пилот не отличает даже Repeat-one от Shuffle, сначала запускается
+отдельный gate различимости исходных дублей:
+
+```powershell
+python run_take_discriminability_gate.py `
+  --input-dir references\group_1 `
+  --group 1 `
+  --events 8 `
+  --interval-ms 1200 `
+  --results-dir results\YYYY-MM-DD_take_discriminability_gate_01
+```
+
 `requirements.txt` задаёт совместимые диапазоны для разработки. Точные версии
 Python-пакетов, использованные проверенным пилотом `v1_10`, зафиксированы в
 `requirements-natural-pool-lock.txt`; Python, ОС и версия libsndfile также
@@ -132,14 +144,20 @@ REAPER, а точное происхождение микрофонных сло
 - `test_analyze_natural_pool_ratings.py` — проверки валидации и раскрытия анкет;
 - `test_natural_pool_pipeline.py` — интеграционные проверки сборки, staging,
   verifier и обработки ответов;
+- `run_take_discriminability_gate.py` — direct-take и short-loop gate перед
+  дальнейшей настройкой scheduler;
+- `test_take_discriminability_gate.py` — проверки выбора near/median/far пар и
+  сборки слепого gate-пакета;
 - `verify_natural_pool_package.py` — проверка слепоты, WAV и SHA-256 пакета;
 - `analyze_natural_pool_ratings.py` — раскрытие и агрегирование оценок после теста;
 - `requirements-natural-pool-lock.txt` — точные CPU-зависимости проверенного
   пилота `v1_10`;
 - `docs/NATURAL_POOL_METHOD.md` — научная формализация;
 - `docs/NATURAL_POOL_PILOT_PROTOCOL.md` — зафиксированный протокол пилота.
+- `docs/TAKE_DISCRIMINABILITY_GATE.md` — диагностический протокол после
+  непрохождения sequence sanity-check.
 - `docs/SUPERVISOR_DEMO_BRIEF.md` — одностраничная памятка для показа научному руководителю.
-- `docs/PROJECT_STATUS_2026-08-30.md` — точка продолжения, проверки и следующий шаг.
+- `docs/PROJECT_STATUS_2026-08-31.md` — точка продолжения, проверки и следующий шаг.
 
 Предыдущие reference-conditioned нейросетевые, токенные, DSP и однореференсные
 sequence-level маршруты сохранены как отрицательный исследовательский результат
