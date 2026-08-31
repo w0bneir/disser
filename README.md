@@ -1,28 +1,26 @@
-# SFX Pool Optimizer — research prototype
+# Перцептивно ограниченный синтез вариаций SFX — research prototype
 
-Локальный CPU-прототип для формирования и воспроизведения малых пулов
-натуральных звуковых эффектов. Система предназначена для исследования и снижения
-прикладной проблемы слышимого
-повтора («пулемётного эффекта») без генерации, морфинга и изменения тембра
-исходных дублей.
+Локальный CPU-прототип для создания вариаций одного SFX в диапазоне изменений,
+измеренном по натуральным дублям того же события. Цель — получить слышимо новые,
+но естественные дубли без свободной нейрогенерации, потери атаки и дополнительных
+импульсных артефактов. Natural-pool optimizer сохранён как baseline и как источник
+калибровочной статистики.
 
 ## Текущий исследовательский вопрос
 
-Можно ли автоматически выбрать из набора натуральных записей репрезентативный
-поднабор заданного размера и управлять порядком воспроизведения так, чтобы уменьшить слышимую
-повторяемость, сохранив естественность, идентичность события и единый
-акустический контекст? Минимально достаточное `K` пока не вычисляется: оно будет оцениваться
-сравнением заранее заданных размеров пула.
+Можно ли оценить допустимую структуру и величину вариативности по группам
+натуральных дублей, а затем использовать эту статистику для создания новых
+вариаций одного референса, которые слышимо отличаются, сохраняют идентичность
+события и не получают заметных артефактов?
 
 Основные проверяемые гипотезы:
 
-1. history-aware scheduler уменьшает слышимую механичность относительно Shuffle
-   при одинаковых файлах и одинаковом числе их использований;
-2. exploratory end-to-end сравнение проверяет, сохраняется ли качество компактной
-   системы Content-aware-3 относительно Shuffle-5 при сокращении ассетов на 40%;
-   это не изолированная проверка алгоритма отбора;
-3. гипотеза следующего этапа: составная акустическая дистанция согласуется с парными
-   человеческими оценками; текущий sequence-пилот это не проверяет.
+1. сегментно-зависимые изменения огибающей, спектрального баланса и stereo width,
+   ограниченные статистикой натуральных дублей, сохраняют идентичность события;
+2. существует диапазон силы преобразования между неслышимой копией и потерей
+   естественности — перцептивный коридор;
+3. такой метод даёт больше полезных вариаций, чем фиксированные pitch/time/EQ
+   baseline при сопоставимой идентичности события.
 
 Для будущего подтверждающего теста ещё нужно заранее зафиксировать первичный показатель,
 практически значимую границу, правило вывода по доверительному интервалу и единицу анализа.
@@ -43,6 +41,10 @@
   абсолютная и основная парная формы прослушивания;
 - воспроизводимый manifest с SHA-256 исходных WAV, слепых стимулов и
   экспортированного пула.
+- профиль натуральной вариативности по 45 динамическим, спектральным и
+  пространственным признакам;
+- перенос bounded natural delta на один референс с защищённой атакой;
+- дозы `low/mid/high`, натуральный ceiling-контроль и слепой sequence gate.
 
 Объективные показатели используются только как диагностика. Решение о слышимой
 пользе принимает слепое прослушивание.
@@ -56,7 +58,18 @@ GPU. В окружении `sfx_gen_5070`:
 python -m unittest -v `
   test_sfx_pool_optimizer.py `
   test_analyze_natural_pool_ratings.py `
-  test_natural_pool_pipeline.py
+  test_natural_pool_pipeline.py `
+  test_take_discriminability_gate.py `
+  test_analyze_take_discriminability_ratings.py `
+  test_perceptual_variation_synthesis.py `
+  test_perceptual_variation_draft.py
+
+python run_perceptual_variation_draft.py `
+  --input-dir references\group_1 `
+  --group 1 `
+  --events 8 `
+  --interval-ms 1200 `
+  --results-dir results\YYYY-MM-DD_perceptual_variation_draft_v0_01
 
 python run_natural_pool_pilot.py `
   --input-dir references\group_1 `
@@ -77,6 +90,15 @@ python run_take_discriminability_gate.py `
   --events 8 `
   --interval-ms 1200 `
   --results-dir results\YYYY-MM-DD_take_discriminability_gate_01
+```
+
+Раскрытие заполненной анкеты:
+
+```powershell
+python analyze_take_discriminability_ratings.py `
+  --gate-dir results\YYYY-MM-DD_take_discriminability_gate_01 `
+  --ratings C:\path\to\take_discriminability_ratings.json `
+  --output-dir results\YYYY-MM-DD_take_discriminability_analysis_01
 ```
 
 `requirements.txt` задаёт совместимые диапазоны для разработки. Точные версии
@@ -138,6 +160,13 @@ REAPER, а точное происхождение микрофонных сло
 
 ## Структура активного метода
 
+- `perceptual_variation_synthesis.py` — оценка natural variation profile и
+  bounded перенос огибающей, спектра и stereo width на один референс;
+- `run_perceptual_variation_draft.py` — атомарная сборка первого слепого
+  synthesis gate;
+- `test_perceptual_variation_synthesis.py` и
+  `test_perceptual_variation_draft.py` — unit и end-to-end проверки нового
+  метода;
 - `sfx_pool_optimizer.py` — анализ, расстояния, выбор пула, scheduler и rendering;
 - `run_natural_pool_pilot.py` — воспроизводимый анализ и слепой пилот;
 - `test_sfx_pool_optimizer.py` — автоматические проверки активного метода;
@@ -148,6 +177,10 @@ REAPER, а точное происхождение микрофонных сло
   дальнейшей настройкой scheduler;
 - `test_take_discriminability_gate.py` — проверки выбора near/median/far пар и
   сборки слепого gate-пакета;
+- `analyze_take_discriminability_ratings.py` — строгая расшифровка заполненного
+  gate с учётом случайной перестановки A/B;
+- `test_analyze_take_discriminability_ratings.py` — проверки расшифровки,
+  повреждённых blind ID и неполных ответов;
 - `verify_natural_pool_package.py` — проверка слепоты, WAV и SHA-256 пакета;
 - `analyze_natural_pool_ratings.py` — раскрытие и агрегирование оценок после теста;
 - `requirements-natural-pool-lock.txt` — точные CPU-зависимости проверенного

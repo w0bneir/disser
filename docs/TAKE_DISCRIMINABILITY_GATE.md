@@ -42,3 +42,18 @@ scale. Это сохраняет внутреннюю динамику raw-по�
 - Если raw Shuffle различим, а clip-matched нет, matching удаляет полезный
   источник вариативности и должен быть исключён или ослаблен.
 - Только после успешного gate разрешается новый scheduler-пилот.
+
+## Раскрытие анкеты
+
+После сохранения JSON анкета проверяется и расшифровывается только вместе с
+приватным ключом:
+
+```powershell
+python analyze_take_discriminability_ratings.py `
+  --gate-dir results\YYYY-MM-DD_take_discriminability_gate_01 `
+  --ratings C:\path\to\take_discriminability_ratings.json `
+  --output-dir results\YYYY-MM-DD_take_discriminability_analysis_01
+```
+
+Анализатор проверяет protocol, полноту всех ответов и точное соответствие blind
+ID приватному ключу. Выбор A/B декодируется с учётом клиентской рандомизации.
