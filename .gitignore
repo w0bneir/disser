@@ -7,6 +7,9 @@ __pycache__/
 # Generated audio and plots can be reproduced from the configurations.
 results/
 
+# Local natural-take corpus: keep out of Git until provenance and distribution rights are documented.
+references/group_1/*.wav
+
 # Local/remote AI caches and manually transferred experiment archives.
 artifacts/
 hf-cache/

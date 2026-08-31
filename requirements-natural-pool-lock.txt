@@ -1,0 +1,7 @@
+# Direct and required runtime packages used by the verified v1_10 CPU pilot.
+# Python 3.11.15 and libsndfile 1.2.2 are recorded in run_manifest.json.
+numpy==2.4.6
+scipy==1.17.1
+soundfile==0.14.0
+cffi==2.1.1
+pycparser==3.0

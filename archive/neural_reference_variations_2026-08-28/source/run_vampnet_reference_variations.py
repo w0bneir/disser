@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
 import os
@@ -19,6 +20,7 @@ import numpy as np
 import soundfile as sf
 import torch
 
+from sfx_metrics import compare_to_reference
 from vampnet_reference_variations import (
     MINIMUM_FREE_VRAM_MIB,
     MINIMUM_TOTAL_VRAM_MIB,
@@ -37,6 +39,52 @@ from vampnet_reference_variations import (
 DEFAULT_MODEL_DIR = Path("artifacts/vampnet_models")
 VAMPNET_SOURCE_COMMIT = "72e2675790091fe28ecfd8391303a46b25a703db"
 LAC_SOURCE_COMMIT = "7761206878d1fba79aad314a38f975e9589af0a4"
+
+
+def codec_relative_metrics(
+    codec_reference: np.ndarray,
+    candidate: np.ndarray,
+) -> dict[str, float | int]:
+    """Measure generation beyond codec loss; still not a perceptual verdict."""
+    return compare_to_reference(
+        torch.from_numpy(np.asarray(codec_reference, dtype=np.float32)),
+        torch.from_numpy(np.asarray(candidate, dtype=np.float32)),
+        SAMPLE_RATE,
+    )
+
+
+def load_coarse_lora(model: torch.nn.Module, checkpoint: Path) -> dict[str, object]:
+    """Safely load a local LoRA-only state into an already constructed model."""
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"Не найден coarse LoRA checkpoint: {checkpoint}")
+    state = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    if not isinstance(state, dict) or not state:
+        raise ValueError("Coarse LoRA checkpoint не является непустым state dict")
+    if any("lora_" not in str(key) for key in state):
+        raise ValueError("Coarse LoRA checkpoint содержит не-LoRA параметры")
+    if any(not isinstance(value, torch.Tensor) for value in state.values()):
+        raise ValueError("Coarse LoRA checkpoint содержит не-tensor значения")
+
+    # loralib merges adapters into the base weight on eval().  Temporarily
+    # switching to train() guarantees the newly loaded adapter is merged once.
+    model.train()
+    incompatible = model.load_state_dict(state, strict=False)
+    model.eval()
+    if incompatible.unexpected_keys:
+        raise ValueError(
+            f"Неожиданные LoRA keys: {incompatible.unexpected_keys[:3]}"
+        )
+    digest = hashlib.sha256()
+    with checkpoint.open("rb") as source:
+        for chunk in iter(lambda: source.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "path": str(checkpoint.resolve()),
+        "bytes": checkpoint.stat().st_size,
+        "sha256": digest.hexdigest(),
+        "tensor_count": len(state),
+        "parameter_count": int(sum(value.numel() for value in state.values())),
+    }
 
 
 def prepare_reference_on_gpu(reference: np.ndarray):
@@ -84,6 +132,12 @@ def write_supervisor_demo(results_dir: Path, report: dict[str, object]) -> Path:
             """
         )
     config = report["configuration"]
+    profile = str(config.get("mask_profile", "conservative"))
+    profile_description = {
+        "conservative": "Три нижних акустических codebook-а сохранены",
+        "tiered-mid": "Codebook 0–1 сохранены; изменения перенесены в 2–3",
+        "tiered-event": "Codebook 0 сохранён; изменения перенесены в 1–3 после атаки",
+    }[profile]
     page = f"""<!doctype html>
 <html lang="ru">
 <head>
@@ -133,8 +187,8 @@ def write_supervisor_demo(results_dir: Path, report: dict[str, object]) -> Path:
   <img src="envelope_overview.png" alt="Нормированные RMS-огибающие" style="width:100%;background:white;border-radius:12px">
 
   <h2>Зафиксированный метод</h2>
-  <p>Prompt отсутствует. Три нижних акустических codebook-а сохранены, верхние
-  пересэмплированы с периодическими временными якорями; первые
+  <p>Prompt отсутствует. {profile_description}, верхние уровни
+  пересэмплированы разреженно с периодическими временными якорями; первые
   {float(config['attack_ms']):.0f} мс защищены. Частота 44,1 кГц, mono, одинаковая
   длина. Пик VRAM {float(report['peak_vram_mib']):.0f} MiB.</p>
 
@@ -333,6 +387,7 @@ def run_generation(
     sampling_steps: int,
     mask_profile: str,
     fine_resample_period: int,
+    coarse_lora: Path | None,
     allow_unsafe_vram: bool,
 ) -> Path:
     assets = validate_model_assets(
@@ -350,7 +405,7 @@ def run_generation(
         raise ValueError("sampling_steps должны быть в диапазоне 1..24")
     if not 0.0 <= attack_ms <= 500.0:
         raise ValueError("attack_ms должны быть в диапазоне 0..500")
-    if mask_profile not in {"conservative", "tiered-mid"}:
+    if mask_profile not in {"conservative", "tiered-mid", "tiered-event"}:
         raise ValueError("Неизвестный mask_profile")
     if not 2 <= fine_resample_period <= 16:
         raise ValueError("fine_resample_period должен быть в диапазоне 2..16")
@@ -378,6 +433,13 @@ def run_generation(
         device="cuda",
         compile=False,
     )
+    coarse_lora_report = None
+    if coarse_lora is not None:
+        coarse_lora_report = load_coarse_lora(interface.coarse, coarse_lora)
+        print(
+            f"[+] Task-aligned coarse LoRA загружена: {coarse_lora.name}",
+            flush=True,
+        )
     interface.eval().requires_grad_(False)
     print(f"[+] Модели загружены за {time.perf_counter() - load_started:.1f} с", flush=True)
 
@@ -402,10 +464,10 @@ def run_generation(
     for index, seed in enumerate(seeds, start=1):
         at.util.seed(seed)
         offset = seed % periodic_prompt if periodic_prompt else 0
-        if mask_profile == "tiered-mid":
+        if mask_profile in {"tiered-mid", "tiered-event"}:
             mask_np = build_tiered_reference_mask(
                 tuple(codes.shape),
-                coarse_start=2,
+                coarse_start=1 if mask_profile == "tiered-event" else 2,
                 coarse_stop=4,
                 coarse_anchor_period=periodic_prompt,
                 coarse_anchor_offset=offset,
@@ -468,6 +530,10 @@ def run_generation(
                 "changed_token_fraction": float(changed.mean()),
                 "changed_fraction_per_codebook": changed_per_codebook,
                 "reference_metrics_diagnostic_only": metrics,
+                "codec_relative_metrics_diagnostic_only": codec_relative_metrics(
+                    codec_roundtrip,
+                    waveform,
+                ),
             }
         )
         print(
@@ -515,6 +581,7 @@ def run_generation(
         ),
         "configuration": {
             "prompt": None,
+            "coarse_lora": coarse_lora_report,
             "mask_profile": mask_profile,
             "seeds": seeds,
             "upper_codebook_mask": upper_codebook_mask,
@@ -567,10 +634,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sampling-steps", type=int, default=12)
     parser.add_argument(
         "--mask-profile",
-        choices=("conservative", "tiered-mid"),
+        choices=("conservative", "tiered-mid", "tiered-event"),
         default="conservative",
     )
     parser.add_argument("--fine-resample-period", type=int, default=4)
+    parser.add_argument(
+        "--coarse-lora",
+        type=Path,
+        help="Optional task-aligned coarse LoRA checkpoint",
+    )
     return parser
 
 
@@ -605,6 +677,7 @@ def main() -> int:
                 sampling_steps=arguments.sampling_steps,
                 mask_profile=arguments.mask_profile,
                 fine_resample_period=arguments.fine_resample_period,
+                coarse_lora=arguments.coarse_lora,
                 allow_unsafe_vram=arguments.allow_unsafe_vram,
             )
         return 0

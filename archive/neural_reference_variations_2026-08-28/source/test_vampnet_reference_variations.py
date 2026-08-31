@@ -11,7 +11,9 @@ import numpy as np
 from vampnet_reference_variations import (
     MODEL_ASSET_SHA256,
     MODEL_ASSET_SIZES,
+    build_fine_reconciliation_mask,
     build_reference_mask,
+    build_codebook_hybrids,
     build_tiered_reference_mask,
     fix_length,
     match_rms_and_limit,
@@ -60,6 +62,31 @@ class VampNetReferenceVariationTests(unittest.TestCase):
         self.assertEqual(mask[0, 2, 3], 1)
         self.assertTrue(np.all(mask[:, 4:, 2::4] == 1))
         self.assertEqual(mask[0, 4, 3], 0)
+
+    def test_fine_reconciliation_mask_never_changes_event_codebooks_or_attack(self) -> None:
+        mask = build_fine_reconciliation_mask(
+            (1, 14, 12),
+            fine_start=4,
+            resample_period=3,
+            resample_offset=1,
+            attack_tokens=2,
+        )
+        self.assertTrue(np.all(mask[:, :4, :] == 0))
+        self.assertTrue(np.all(mask[:, :, :2] == 0))
+        self.assertTrue(np.all(mask[:, 4:, 4::3] == 1))
+        self.assertTrue(np.all(mask[:, 4:, 3::3] == 0))
+
+    def test_codebook_hybrids_replace_only_named_levels(self) -> None:
+        reference = np.zeros((1, 14, 3), dtype=np.int64)
+        variation = np.ones((1, 14, 3), dtype=np.int64)
+        hybrids = build_codebook_hybrids(reference, variation)
+        self.assertTrue(np.all(hybrids["codec_reference"] == 0))
+        self.assertTrue(np.all(hybrids["cb1_only"][:, 1, :] == 1))
+        self.assertTrue(np.all(hybrids["cb1_only"][:, 2:, :] == 0))
+        self.assertTrue(np.all(hybrids["cb2_3_only"][:, 2:4, :] == 1))
+        self.assertTrue(np.all(hybrids["cb2_3_only"][:, :2, :] == 0))
+        self.assertTrue(np.all(hybrids["fine_4_13_only"][:, 4:, :] == 1))
+        self.assertTrue(np.all(hybrids["full_variation"] == 1))
 
     def test_rms_matching_and_limiter(self) -> None:
         reference = np.asarray([0.25, -0.25] * 100, dtype=np.float32)

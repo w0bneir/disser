@@ -1,0 +1,200 @@
+{
+  "stage": "structured_resynthesis_causal_gate1",
+  "method_version": "structured_resynthesis_v2_gate1_preregistered",
+  "source": "C:\\Users\\godmi\\Projects\\disser\\references\\shot_sound.wav",
+  "sample_rate": 44100,
+  "frames": 75600,
+  "regions": {
+    "sample_rate": 44100,
+    "frames": 75600,
+    "peak_sample": 128,
+    "attack_end_sample": 5420,
+    "body_end_sample": 21760,
+    "peak_seconds": 0.0029024943310657597,
+    "attack_end_seconds": 0.12290249433106576,
+    "body_end_seconds": 0.49342403628117915,
+    "duration_seconds": 1.7142857142857142
+  },
+  "elapsed_seconds": 0.1405747999669984,
+  "candidates": [
+    {
+      "name": "A1_attack_mild",
+      "label": "A1 — атака, мягкая межполосная микровариация",
+      "file": "A1_attack_mild.wav",
+      "technical_gate_passed": true,
+      "technical_gate_failures": [],
+      "structure_prescreen_passed": true,
+      "diagnostic_metrics_not_a_perceptual_verdict": {
+        "waveform_correlation": 0.73366021228495,
+        "envelope_correlation": 0.9998301052789076,
+        "rms_ratio": 0.7596264725204275,
+        "copy_residual_db": -3.396442900590059,
+        "spectral_centroid_delta_hz": -34.888805461210495,
+        "high_frequency_fraction_delta": -0.007060679684454313,
+        "reference_strong_peak_count": 4,
+        "candidate_strong_peak_count": 4,
+        "attack_waveform_correlation": 0.5591940546422784,
+        "body_waveform_correlation": 0.9999999999999996,
+        "tail_waveform_correlation": 1.0
+      }
+    },
+    {
+      "name": "A2_attack_medium",
+      "label": "A2 — атака, средняя межполосная микровариация",
+      "file": "A2_attack_medium.wav",
+      "technical_gate_passed": true,
+      "technical_gate_failures": [],
+      "structure_prescreen_passed": true,
+      "diagnostic_metrics_not_a_perceptual_verdict": {
+        "waveform_correlation": 0.7909137847198088,
+        "envelope_correlation": 0.9995257475455162,
+        "rms_ratio": 0.6974826108964327,
+        "copy_residual_db": -4.307784691409978,
+        "spectral_centroid_delta_hz": 42.746955720145934,
+        "high_frequency_fraction_delta": 0.009016086765454026,
+        "reference_strong_peak_count": 4,
+        "candidate_strong_peak_count": 4,
+        "attack_waveform_correlation": 0.654404787799397,
+        "body_waveform_correlation": 0.9999999999999999,
+        "tail_waveform_correlation": 0.9999999999999964
+      }
+    },
+    {
+      "name": "B1_body_mild",
+      "label": "B1 — тело, мягкий перенос спектральной микротекстуры",
+      "file": "B1_body_mild.wav",
+      "technical_gate_passed": true,
+      "technical_gate_failures": [],
+      "structure_prescreen_passed": false,
+      "diagnostic_metrics_not_a_perceptual_verdict": {
+        "waveform_correlation": 0.9984885757484596,
+        "envelope_correlation": 0.9997772779825497,
+        "rms_ratio": 0.99952737783737,
+        "copy_residual_db": -25.167661251406116,
+        "spectral_centroid_delta_hz": 7.027505729446148,
+        "high_frequency_fraction_delta": 0.0015143663687048475,
+        "reference_strong_peak_count": 4,
+        "candidate_strong_peak_count": 3,
+        "attack_waveform_correlation": 0.9997671699820284,
+        "body_waveform_correlation": 0.9954047822604283,
+        "tail_waveform_correlation": 0.999999999999997
+      }
+    },
+    {
+      "name": "B2_body_medium",
+      "label": "B2 — тело, средний перенос спектральной микротекстуры",
+      "file": "B2_body_medium.wav",
+      "technical_gate_passed": true,
+      "technical_gate_failures": [],
+      "structure_prescreen_passed": true,
+      "diagnostic_metrics_not_a_perceptual_verdict": {
+        "waveform_correlation": 0.9939566772159119,
+        "envelope_correlation": 0.9996066163345978,
+        "rms_ratio": 0.9984057860805433,
+        "copy_residual_db": -19.17193876031829,
+        "spectral_centroid_delta_hz": -27.828179757513453,
+        "high_frequency_fraction_delta": -0.0028109721896075607,
+        "reference_strong_peak_count": 4,
+        "candidate_strong_peak_count": 4,
+        "attack_waveform_correlation": 0.9987811557467277,
+        "body_waveform_correlation": 0.9821545878672286,
+        "tail_waveform_correlation": 0.999999999999997
+      }
+    },
+    {
+      "name": "T1_tail_mild",
+      "label": "T1 — хвост, мягкая фазовая декорреляция",
+      "file": "T1_tail_mild.wav",
+      "technical_gate_passed": true,
+      "technical_gate_failures": [],
+      "structure_prescreen_passed": true,
+      "diagnostic_metrics_not_a_perceptual_verdict": {
+        "waveform_correlation": 0.9519428408213854,
+        "envelope_correlation": 0.9989221240610301,
+        "rms_ratio": 0.99728422360428,
+        "copy_residual_db": -10.324044543547634,
+        "spectral_centroid_delta_hz": 3.6838927190933646,
+        "high_frequency_fraction_delta": 0.0005722593871577003,
+        "reference_strong_peak_count": 4,
+        "candidate_strong_peak_count": 4,
+        "attack_waveform_correlation": 1.0,
+        "body_waveform_correlation": 0.9798571004460847,
+        "tail_waveform_correlation": -0.04484048349591918
+      }
+    },
+    {
+      "name": "T2_tail_medium",
+      "label": "T2 — хвост, средняя фазовая декорреляция",
+      "file": "T2_tail_medium.wav",
+      "technical_gate_passed": true,
+      "technical_gate_failures": [],
+      "structure_prescreen_passed": true,
+      "diagnostic_metrics_not_a_perceptual_verdict": {
+        "waveform_correlation": 0.9569902988858529,
+        "envelope_correlation": 0.9989963200206357,
+        "rms_ratio": 0.9977337217023073,
+        "copy_residual_db": -10.794837014694922,
+        "spectral_centroid_delta_hz": 2.1623621905271193,
+        "high_frequency_fraction_delta": 0.00040962917006455435,
+        "reference_strong_peak_count": 4,
+        "candidate_strong_peak_count": 4,
+        "attack_waveform_correlation": 1.0,
+        "body_waveform_correlation": 0.9871957985146033,
+        "tail_waveform_correlation": 0.0279848356568553
+      }
+    }
+  ],
+  "decision_rule": {
+    "identity_min": 4,
+    "naturalness_min": 4,
+    "useful_difference_min": 3,
+    "extra_events_allowed": false,
+    "no_parameter_change_before_listening": true
+  },
+  "requires_human_listening": false,
+  "human_listening_gate": {
+    "evaluated_at": "2026-08-28",
+    "status": "fail",
+    "ratings": {
+      "A1_attack_mild": {
+        "identity": 5,
+        "naturalness": 4,
+        "useful_difference": 1,
+        "extra_event": false
+      },
+      "A2_attack_medium": {
+        "identity": 5,
+        "naturalness": 4,
+        "useful_difference": 1,
+        "extra_event": false
+      },
+      "B1_body_mild": {
+        "identity": 5,
+        "naturalness": 4,
+        "useful_difference": 1,
+        "extra_event": false
+      },
+      "B2_body_medium": {
+        "identity": 5,
+        "naturalness": 4,
+        "useful_difference": 1,
+        "extra_event": false
+      },
+      "T1_tail_mild": {
+        "identity": 5,
+        "naturalness": 4,
+        "useful_difference": 1,
+        "extra_event": false
+      },
+      "T2_tail_medium": {
+        "identity": 5,
+        "naturalness": 4,
+        "useful_difference": 1,
+        "extra_event": false
+      }
+    },
+    "listener_summary": "Все варианты почти одинаковы; присутствуют только микроотличия.",
+    "failed_criterion": "useful_difference_min_3",
+    "decision": "Остановить маршрут без усиления параметров и без parameter sweep."
+  }
+}

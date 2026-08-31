@@ -1,0 +1,8 @@
+# Общие зависимости без выбора CUDA-сборки PyTorch.
+#
+# Сначала установите один совместимый файл из requirements/, например:
+#   python -m pip install -r requirements/windows-cu128-blackwell.txt
+# Затем установите этот файл:
+#   python -m pip install -r requirements.txt
+
+-r requirements/base.txt

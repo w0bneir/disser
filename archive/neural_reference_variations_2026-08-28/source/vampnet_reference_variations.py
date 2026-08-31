@@ -338,5 +338,67 @@ def build_tiered_reference_mask(
     return mask
 
 
+def build_fine_reconciliation_mask(
+    code_shape: tuple[int, int, int],
+    *,
+    fine_start: int = 4,
+    resample_period: int = 1,
+    resample_offset: int = 0,
+    attack_tokens: int = 0,
+) -> np.ndarray:
+    """Mask only RVQ fine levels while keeping the event codebooks fixed.
+
+    This is a causal diagnostic, not another event-generation profile. It lets
+    us hold codebooks ``0:fine_start`` constant and ask whether metallic colour
+    comes from stale or sparsely regenerated fine tokens. ``resample_period=1``
+    rebuilds every fine token after the protected attack; larger periods rebuild
+    a deterministic sparse subset.
+    """
+    batch, codebooks, steps = code_shape
+    if batch < 1 or codebooks < 1 or steps < 1:
+        raise ValueError(f"Некорректная форма кодов: {code_shape}")
+    if not 1 <= fine_start < codebooks:
+        raise ValueError("fine_start должен оставлять хотя бы один fine codebook")
+    if resample_period < 1:
+        raise ValueError("resample_period должен быть положительным")
+    if attack_tokens < 0:
+        raise ValueError("attack_tokens не может быть отрицательным")
+
+    mask = np.zeros(code_shape, dtype=np.int64)
+    offset = resample_offset % resample_period
+    mask[:, fine_start:, offset::resample_period] = 1
+    if attack_tokens:
+        mask[:, :, : min(attack_tokens, steps)] = 0
+    return mask
+
+
+def build_codebook_hybrids(
+    reference_codes: np.ndarray,
+    variation_codes: np.ndarray,
+) -> dict[str, np.ndarray]:
+    """Собрать причинную лестницу codebook-вкладов для RVQ с 14 уровнями."""
+    reference = np.asarray(reference_codes)
+    variation = np.asarray(variation_codes)
+    if reference.shape != variation.shape or reference.ndim != 3:
+        raise ValueError("Reference и variation codes должны иметь одинаковую 3D-форму")
+    if reference.shape[1] != 14:
+        raise ValueError("Codebook ladder v1 требует ровно 14 codebook-ов")
+
+    def replacing(*indices: int) -> np.ndarray:
+        output = reference.copy()
+        output[:, indices, :] = variation[:, indices, :]
+        return output
+
+    return {
+        "codec_reference": reference.copy(),
+        "cb1_only": replacing(1),
+        "cb1_2": replacing(1, 2),
+        "cb1_3": replacing(1, 2, 3),
+        "cb2_3_only": replacing(2, 3),
+        "fine_4_13_only": replacing(*range(4, 14)),
+        "full_variation": variation.copy(),
+    }
+
+
 def serializable_description(audio: np.ndarray, sample_rate: int) -> dict[str, Any]:
     return asdict(describe_audio(audio, sample_rate))
