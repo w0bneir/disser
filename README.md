@@ -15,8 +15,9 @@
 
 Основные проверяемые гипотезы:
 
-1. сегментно-зависимые изменения огибающей, спектрального баланса и stereo width,
-   ограниченные статистикой натуральных дублей, сохраняют идентичность события;
+1. новая стохастическая микроструктура тела и хвоста, ограниченная статистикой
+   натуральных дублей и совмещённая с неизменной атакой, создаёт полезный новый
+   дубль;
 2. существует диапазон силы преобразования между неслышимой копией и потерей
    естественности — перцептивный коридор;
 3. такой метод даёт больше полезных вариаций, чем фиксированные pitch/time/EQ
@@ -45,6 +46,14 @@
   пространственным признакам;
 - перенос bounded natural delta на один референс с защищённой атакой;
 - дозы `low/mid/high`, натуральный ceiling-контроль и слепой sequence gate.
+- 90-мерный профиль микроструктуры по всем 26 WAV с нормализацией только внутри
+  каждой из шести групп;
+- новый независимый стохастический носитель тела/хвоста для каждого seed,
+  сформированный времязависимым спектром референса;
+- sample-exact защита первых 55 ms подготовленного клипа и автоматическая
+  калибровка трёх доз по Q25/median/Q75 натуральных пар;
+- factorial gate: exact-copy, macro-only, micro-only, macro+micro, natural
+  ceiling и отдельная проверка серии.
 
 Объективные показатели используются только как диагностика. Решение о слышимой
 пользе принимает слепое прослушивание.
@@ -63,7 +72,17 @@ python -m unittest -v `
   test_analyze_take_discriminability_ratings.py `
   test_perceptual_variation_synthesis.py `
   test_perceptual_variation_draft.py `
-  test_analyze_perceptual_variation_ratings.py
+  test_analyze_perceptual_variation_ratings.py `
+  test_microstructure_synthesis.py `
+  test_microstructure_draft.py
+
+python run_microstructure_draft.py `
+  --input-dir references\group_1 `
+  --experiment-group 1 `
+  --reference-name "SHOT 1.4.wav" `
+  --events 8 `
+  --interval-ms 1200 `
+  --results-dir results\YYYY-MM-DD_microstructure_factorial_v1_01
 
 python run_perceptual_variation_draft.py `
   --input-dir references\group_1 `
@@ -166,6 +185,13 @@ REAPER, а точное происхождение микрофонных сло
 
 ## Структура активного метода
 
+- `microstructure_synthesis.py` — внутригрупповой 90-мерный профиль,
+  transient-locked стохастический рендер и калибровка силы по натуральному
+  коридору;
+- `run_microstructure_draft.py` — атомарная сборка factorial gate v1 по всем 26
+  натуральным WAV;
+- `test_microstructure_synthesis.py` и `test_microstructure_draft.py` — unit и
+  end-to-end проверки, включая противофазное stereo и точное сохранение атаки;
 - `perceptual_variation_synthesis.py` — оценка natural variation profile и
   bounded перенос огибающей, спектра и stereo width на один референс;
 - `run_perceptual_variation_draft.py` — атомарная сборка первого слепого
@@ -199,7 +225,8 @@ REAPER, а точное происхождение микрофонных сло
 - `docs/TAKE_DISCRIMINABILITY_GATE.md` — диагностический протокол после
   непрохождения sequence sanity-check.
 - `docs/SUPERVISOR_DEMO_BRIEF.md` — одностраничная памятка для показа научному руководителю.
-- `docs/PROJECT_STATUS_2026-08-31.md` — точка продолжения, проверки и следующий шаг.
+- `docs/PROJECT_STATUS_2026-09-01.md` — текущая точка продолжения, проверки и
+  следующий слуховой gate.
 
 Предыдущие reference-conditioned нейросетевые, токенные, DSP и однореференсные
 sequence-level маршруты сохранены как отрицательный исследовательский результат
